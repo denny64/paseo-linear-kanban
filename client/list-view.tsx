@@ -1,14 +1,15 @@
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
-import { type Card, COLUMNS, type ColumnId } from "../shared/board";
+import { type Card, COLUMNS, type ColumnId, type Schedule } from "../shared/board";
 import { timeAgo } from "../shared/time";
-import { ColumnHeading, IconButton, LabelPill, ProjectTag, TextAction, type Theme } from "./controls";
+import { ColumnHeading, IconButton, LabelPill, ProjectTag, ScheduleBadge, TextAction, type Theme } from "./controls";
 
 // Every card on one scrolling page, grouped by column in board order.
 export function ListView({
   theme,
   compact,
   byColumn,
+  schedules,
   onOpen,
   onStartAgent,
   onArchive,
@@ -17,6 +18,7 @@ export function ListView({
   theme: Theme;
   compact: boolean;
   byColumn: Map<ColumnId, Card[]>;
+  schedules: Map<string, Schedule>;
   onOpen(key: string): void;
   onStartAgent(key: string): void;
   onArchive(key: string): void;
@@ -60,6 +62,7 @@ export function ListView({
                     theme={theme}
                     card={card}
                     compact={compact}
+                    schedule={schedules.get(card.id)}
                     first={index === 0}
                     onPress={() => onOpen(card.id)}
                     onStartAgent={() => onStartAgent(card.id)}
@@ -79,6 +82,7 @@ function ListRow({
   theme,
   card,
   compact,
+  schedule,
   first,
   onPress,
   onStartAgent,
@@ -87,6 +91,7 @@ function ListRow({
   theme: Theme;
   card: Card;
   compact: boolean;
+  schedule?: Schedule;
   first: boolean;
   onPress(): void;
   onStartAgent(): void;
@@ -134,6 +139,7 @@ function ListRow({
           {card.assignees.length > 1 ? ` +${card.assignees.length - 1}` : ""}
         </Text>
       ) : null}
+      {schedule ? <ScheduleBadge theme={theme} schedule={schedule} /> : null}
       <Text style={[muted, { minWidth: 32, textAlign: "right", fontVariant: ["tabular-nums"] }]}>{age}</Text>
       {/* Same slot either way so rows line up: start open cards, archive done ones. */}
       {card.column !== "done" ? (

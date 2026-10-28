@@ -1,6 +1,17 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { archiveCardRpc, type Card, type ColumnId, loadBoardRpc, moveCardRpc } from "../shared/board";
+import { useMemo } from "react";
+import {
+  archiveCardRpc,
+  cancelScheduleRpc,
+  type Card,
+  type ColumnId,
+  createScheduleRpc,
+  listSchedulesRpc,
+  loadBoardRpc,
+  moveCardRpc,
+  type Schedule,
+} from "../shared/board";
 
 type Board = { cards: Card[] };
 
@@ -70,4 +81,25 @@ export function useArchiveCard(onError: (error: unknown) => void) {
       onError(error);
     },
   });
+}
+
+// Pending and failed scheduled starts, by card key.
+export function useSchedules() {
+  const listSchedules = useRpc(listSchedulesRpc);
+  const query = useQuery({ queryKey: ["schedules"], queryFn: () => listSchedules({}), refetchInterval: 60_000 });
+  return useMemo(
+    () => new Map((query.data?.schedules ?? []).map((s) => [s.cardId, s])),
+    [query.data],
+  );
+}
+
+export function useScheduleActions(onError: (error: unknown) => void) {
+  const queryClient = useQueryClient();
+  const createSchedule = useRpc(createScheduleRpc);
+  const cancelSchedule = useRpc(cancelScheduleRpc);
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["schedules"] });
+  return {
+    create: useMutation({ mutationFn: createSchedule, onSuccess: refresh, onError }),
+    cancel: useMutation({ mutationFn: (schedule: Schedule) => cancelSchedule({ id: schedule.id }), onSuccess: refresh, onError }),
+  };
 }

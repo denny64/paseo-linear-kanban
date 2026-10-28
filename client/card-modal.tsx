@@ -6,9 +6,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { boardSettings, type Card, COLUMNS, type ColumnId } from "../shared/board";
-import { Button, errorMessage, inputStyle, LabelPill, ProjectTag, type Theme } from "./controls";
-import { type AgentImage, ImageAttachments, useImages } from "./images";
-import { repoKey } from "./use-boards";
+import { type AgentConfig, startAgent } from "../shared/start-agent";
+import { runAtLabel, schedulePresets } from "../shared/time";
+import { Button, errorMessage, inputStyle, LabelPill, ProjectTag, ScheduleBadge, type Theme } from "./controls";
+import { ImageAttachments, useImages } from "./images";
+import { repoKey, useScheduleActions, useSchedules } from "./use-boards";
+
+const NOW = "now";
 
 // "Fixes ENG-12" links the pull request in Linear, which moves the issue to
 // In Review when it opens and Done when it merges (with the GitHub integration on).
@@ -177,45 +181,6 @@ export function AgentPicker({ theme, picker }: { theme: Theme; picker: ReturnTyp
   );
 }
 
-// A fresh worktree per card, so several agents can work the board at once.
-export async function startAgentOn(
-  paseo: PaseoApi,
-  card: Card,
-  project: PaseoProject,
-  config: PaseoAgentConfig,
-  prompt: string,
-  images: AgentImage[],
-) {
-  const workspace = await paseo.workspaces.create({
-    title: `${card.identifier} ${card.title}`,
-    source: { kind: "worktree", cwd: project.projectRootPath, projectId: project.projectId, action: "branch-off" },
-    firstAgentContext: { prompt },
-  });
-  const created = await workspace.agents.create({
-    config,
-    prompt,
-    images,
-    attachments: [
-      {
-        type: "text",
-        mimeType: "text/plain",
-        title: `${card.identifier}: ${card.title}`,
-        text: [`# ${card.identifier}: ${card.title}`, card.url, "", card.body.trim()].join("\n"),
-        externalResource: {
-          provider: "linear",
-          providerLabel: "Linear",
-          resourceType: "issue",
-          id: card.id,
-          identifier: card.identifier,
-          title: card.title,
-          url: card.url,
-        },
-      },
-    ],
-  });
-  return created.id;
-}
-
 export function CardModal({
   theme,
   card,
@@ -270,7 +235,7 @@ export function CardModal({
         </View>
 
         {card.column !== "done" ? (
-          <StartAgent theme={theme} card={card} onStarted={onAgentStarted} />
+          <StartAgent theme={theme} card={card} onStarted={onAgentStarted} onClose={onClose} />
         ) : null}
 
         <View style={{ gap: 8 }}>
@@ -310,7 +275,7 @@ export function StartAgentModal({
     <Modal title={`Start agent on ${reference}`} open onOpenChange={(open) => !open && onClose()}>
       <Modal.Content>
         <Text style={{ color: theme.colors.foreground, fontSize: 16, fontWeight: "600", lineHeight: 22 }}>{card.title}</Text>
-        <StartAgent theme={theme} card={card} onStarted={onStarted} showHeading={false} />
+        <StartAgent theme={theme} card={card} onStarted={onStarted} onClose={onClose} showHeading={false} />
       </Modal.Content>
     </Modal>
   );
@@ -320,11 +285,13 @@ function StartAgent({
   theme,
   card,
   onStarted,
+  onClose,
   showHeading = true,
 }: {
   theme: Theme;
   card: Card;
   onStarted(agentId: string): void;
+  onClose(): void;
   showHeading?: boolean;
 }) {
   const paseo = usePaseo();
@@ -332,22 +299,58 @@ function StartAgent({
   const picker = useAgentPicker(repoKey(card.project?.id, card.team.id));
   const [prompt, setPrompt] = useState(() => agentPrompt(card));
   const images = useImages(true, toast.error);
+  const scheduled = useSchedules().get(card.id);
+  const schedules = useScheduleActions((error) => toast.error(`Couldn't update the schedule: ${errorMessage(error)}`));
+  // Fixed when the view opens, so "In 1 hour" doesn't drift while you type.
+  const [presets] = useState(() => schedulePresets());
+  const [when, setWhen] = useState(NOW);
+  const runAt = presets.find((p) => p.at === when)?.at;
 
   const start = useMutation({
-    mutationFn: ({ project, config }: { project: PaseoProject; config: PaseoAgentConfig }) =>
-      startAgentOn(paseo, card, project, config, prompt, images.images),
+    mutationFn: ({ project, config }: { project: PaseoProject; config: AgentConfig }) =>
+      startAgent(paseo, { card, project, config, prompt, images: images.images }),
     onSuccess: (agentId) => {
       picker.remember();
+      if (scheduled) schedules.cancel.mutate(scheduled);
       onStarted(agentId);
     },
     onError: (error) => toast.error(`Couldn't start the agent: ${errorMessage(error)}`),
   });
+  const schedule = (config: AgentConfig, at: string) => {
+    const { project } = picker;
+    if (!project) return;
+    const { projectId, projectRootPath } = project;
+    schedules.create.mutate(
+      { card, runAt: at, project: { projectId, projectRootPath }, config: { ...config }, prompt },
+      {
+        onSuccess: () => {
+          picker.remember();
+          toast.show(`${card.identifier} starts at ${runAtLabel(at)}.`);
+          onClose();
+        },
+      },
+    );
+  };
   const { project, config } = picker;
+  const muted = { color: theme.colors.foregroundMuted, fontSize: 12 };
 
   return (
     <View style={{ gap: 8 }}>
       {showHeading ? (
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "600" }}>START AN AGENT</Text>
+      ) : null}
+      {scheduled ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <ScheduleBadge theme={theme} schedule={scheduled} long />
+          <View style={{ flex: 1 }} />
+          <Button
+            theme={theme}
+            label={scheduled.error ? "Dismiss" : "Cancel"}
+            accessibilityLabel={scheduled.error ? "Dismiss the failed schedule" : "Cancel the scheduled start"}
+            disabled={schedules.cancel.isPending}
+            onPress={() => schedules.cancel.mutate(scheduled)}
+          />
+        </View>
       ) : null}
       <AgentPicker theme={theme} picker={picker} />
       <TextInput
@@ -359,15 +362,36 @@ function StartAgent({
         placeholderTextColor={theme.colors.foregroundMuted}
       />
       <ImageAttachments theme={theme} images={images} />
-      <View style={{ flexDirection: "row" }}>
-        <Button
-          theme={theme}
-          label={start.isPending ? "Starting…" : "Start agent"}
-          icon="Play"
-          primary
-          disabled={!project || !config || !prompt.trim() || start.isPending}
-          onPress={() => project && config && start.mutate({ project, config })}
+      <SettingsCard>
+        <SettingsSelect
+          label="When"
+          hint={runAt ? "Paseo starts the agent then, even with the app closed." : undefined}
+          value={when}
+          options={[{ value: NOW, label: "Now" }, ...presets.map((p) => ({ value: p.at, label: p.label }))]}
+          onValueChange={setWhen}
         />
+      </SettingsCard>
+      {runAt && images.images.length > 0 ? <Text style={muted}>Images aren't kept for scheduled starts.</Text> : null}
+      <View style={{ flexDirection: "row" }}>
+        {runAt ? (
+          <Button
+            theme={theme}
+            label={schedules.create.isPending ? "Scheduling…" : scheduled ? "Reschedule" : "Schedule"}
+            icon="Clock"
+            primary
+            disabled={!project || !config || !prompt.trim() || schedules.create.isPending}
+            onPress={() => project && config && schedule(config, runAt)}
+          />
+        ) : (
+          <Button
+            theme={theme}
+            label={start.isPending ? "Starting…" : "Start agent"}
+            icon="Play"
+            primary
+            disabled={!project || !config || !prompt.trim() || start.isPending}
+            onPress={() => project && config && start.mutate({ project, config })}
+          />
+        )}
       </View>
     </View>
   );
