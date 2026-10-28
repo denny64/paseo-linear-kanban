@@ -18,7 +18,7 @@ export async function linear<T>(query: string, variables: Record<string, unknown
     headers: { "Content-Type": "application/json", Authorization: apiKey },
     body: JSON.stringify({ query, variables }),
   });
-  if (response.status === 401) throw new Error("Linear rejected the API key. Paste a new one in the project picker.");
+  if (response.status === 401) throw new Error("Linear rejected the API key. Paste a new one in the board's settings.");
   const result = (await response.json().catch(() => null)) as { data?: T; errors?: { message: string }[] } | null;
   if (result?.errors?.length) throw new Error(result.errors.map((e) => e.message).join("; "));
   if (!response.ok || !result?.data) throw new Error(`Linear API request failed (${response.status}).`);

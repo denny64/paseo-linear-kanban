@@ -1,8 +1,8 @@
 # Linear Kanban for Paseo
 
-A kanban board for [Paseo](https://paseo.sh) that stores everything in [Linear](https://linear.app) issues. It has no database and no extra service; the board is your Linear team's workflow.
+A kanban board for [Paseo](https://paseo.sh) that stores everything in [Linear](https://linear.app) issues. It has no database and no extra service. Every team's issues are on one board, and each card is tagged with its Linear project.
 
-Each card is an issue. Pick a card, choose an agent, and Paseo starts it in a new worktree with the issue attached.
+Pick a card, choose a project and an agent, and Paseo starts the agent in a new worktree with the issue attached.
 
 ## Install
 
@@ -10,13 +10,13 @@ Each card is an issue. Pick a card, choose an agent, and Paseo starts it in a ne
 paseo plugin add denny64/paseo-linear-kanban
 ```
 
-Open **Kanban** in the Paseo sidebar and choose a project. The first time, paste a Linear personal API key (Linear → Settings → Security & access) and pick the Linear team whose issues belong to the project.
+Open **Kanban** in the Paseo sidebar. The first time, paste a Linear personal API key (Linear → Settings → Security & access). To replace the key later, use the settings button in the board's header.
 
 This plugin needs:
 
 - Paseo 0.9.2 or later.
 - A Linear personal API key. It's saved in the plugin's host settings on the machine running the Paseo daemon, which calls Linear with it.
-- A git project in Paseo for each team you link, since agents run in worktrees of it.
+- At least one git project in Paseo for agents to work in.
 
 ## How the board maps to Linear
 
@@ -35,19 +35,15 @@ In the card view, **Mark done** moves the issue to the team's completed state. *
 
 To clear out Done, use the archive button on a done card or **Clear** in the Done column's heading.
 
-**New card** creates an issue in the project's team. The board refreshes every minute and when you press refresh.
+**New card** creates an issue in the team and Linear project you choose, and remembers them for next time. The board refreshes every minute and when you press refresh.
 
-Choose **All projects** in the project picker to see every linked team's issues on one board. "New card" asks which project the issue belongs to. Projects linked to the same team appear once. The combined board refreshes every 5 minutes instead of every minute.
-
-To change a project's team or replace the API key, open the project picker.
-
-The toggle in the header switches between the board and a **list view**. The list shows every card on one page, grouped by column, with its labels, assignee and last update. Paseo remembers which view you chose.
+The toggle in the header switches between the board and a **list view**. The list shows every card on one page, grouped by column, with its project, labels, assignee and last update. Paseo remembers which view you chose.
 
 ## Starting an agent
 
-Press the ▶ button on a card or list row, or open the card, choose an agent and edit the first message if you want, then press **Start agent**. The plugin:
+Press the ▶ button on a card or list row, or open the card. Choose the Paseo project the agent works in, choose an agent and edit the first message if you want, then press **Start agent**. The plugin remembers which Paseo project you picked for each Linear project, or for each team when an issue has no project, and picks it next time. Then it:
 
-1. Creates a workspace on a new worktree branched from the project.
+1. Creates a workspace on a new worktree branched from that project.
 2. Starts the agent there with the issue attached.
 3. Moves the card to **In progress**.
 
@@ -58,7 +54,7 @@ By default the first message tells the agent to open a pull request that include
 
 ## Limitations
 
-- The board shows up to 250 open issues and the 30 most recently completed ones per team.
+- The board shows up to 250 open issues and the 30 most recently completed ones, across every team the API key can see.
 - Dragging moves a card between columns but not within one. Cards are sorted by last update.
 
 ## Development

@@ -93,6 +93,30 @@ export function LabelPill({ theme, name, color }: { theme: Theme; name: string; 
   );
 }
 
+// A card's Linear project: squarer than a label pill so the two read apart.
+export function ProjectTag({ theme, name, color }: { theme: Theme; name: string; color: string }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexShrink: 1,
+        gap: 5,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+        borderWidth: 1,
+        borderColor: theme.colors.border,
+      }}
+    >
+      <View style={{ width: 7, height: 7, borderRadius: 2, backgroundColor: `#${color}` }} />
+      <Text style={{ flexShrink: 1, color: theme.colors.foreground, fontSize: 11, fontWeight: "500" }} numberOfLines={1}>
+        {name}
+      </Text>
+    </View>
+  );
+}
+
 export function ColumnHeading({
   theme,
   column,

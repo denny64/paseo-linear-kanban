@@ -14,6 +14,8 @@ const CARD_FIELDS = `
   fragment Card on Issue {
     id identifier title description url updatedAt
     state { name type }
+    team { id key name }
+    project { id name color }
     labels { nodes { name color } }
     assignee { displayName }
   }
@@ -27,9 +29,13 @@ type RawIssue = {
   url: string;
   updatedAt: string;
   state: { name: string; type: string };
+  team: { id: string; key: string; name: string };
+  project: { id: string; name: string; color: string } | null;
   labels: { nodes: { name: string; color: string }[] };
   assignee: { displayName: string } | null;
 };
+
+const hex = (color: string) => color.replace(/^#/, "");
 
 function toCard(raw: RawIssue): Card {
   return {
@@ -40,47 +46,58 @@ function toCard(raw: RawIssue): Card {
     url: raw.url,
     // Only reached for canceled issues right after a move, which can't target canceled.
     column: columnFor(raw.state) ?? "todo",
-    labels: raw.labels.nodes.map(({ name, color }) => ({ name, color: color.replace(/^#/, "") })),
+    team: raw.team,
+    project: raw.project && { ...raw.project, color: hex(raw.project.color) },
+    labels: raw.labels.nodes.map(({ name, color }) => ({ name, color: hex(color) })),
     assignees: raw.assignee ? [raw.assignee.displayName] : [],
     updatedAt: raw.updatedAt,
   };
 }
 
 export async function listTeams(): Promise<RpcOutput<typeof listTeamsRpc>> {
-  const data = await linear<{ teams: { nodes: { id: string; key: string; name: string }[] } }>(
-    `query { teams(first: 250) { nodes { id key name } } }`,
+  const data = await linear<{
+    teams: { nodes: { id: string; key: string; name: string; projects: { nodes: { id: string; name: string }[] } }[] };
+  }>(
+    `query {
+      teams(first: 250) {
+        nodes {
+          id key name
+          projects(first: 250, filter: { status: { type: { nin: ["completed", "canceled"] } } }) { nodes { id name } }
+        }
+      }
+    }`,
   );
-  return { teams: data.teams.nodes.sort((a, b) => a.name.localeCompare(b.name)) };
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name);
+  return {
+    teams: data.teams.nodes
+      .map((team) => ({ ...team, projects: team.projects.nodes.sort(byName) }))
+      .sort(byName),
+  };
 }
 
-export async function loadBoard({ teamId }: RpcInput<typeof loadBoardRpc>): Promise<RpcOutput<typeof loadBoardRpc>> {
-  // ponytail: capped at 250 open + 30 done issues (one page each); paginate if a team outgrows that.
-  const { team } = await linear<{
-    team: { id: string; key: string; name: string; open: { nodes: RawIssue[] }; done: { nodes: RawIssue[] } };
-  }>(
-    `query Board($teamId: String!) {
-      team(id: $teamId) {
-        id key name
-        open: issues(first: 250, orderBy: updatedAt, filter: { state: { type: { in: ["triage", "backlog", "unstarted", "started"] } } }) { nodes { ...Card } }
-        done: issues(first: 30, orderBy: updatedAt, filter: { state: { type: { eq: "completed" } } }) { nodes { ...Card } }
-      }
+export async function loadBoard(): Promise<RpcOutput<typeof loadBoardRpc>> {
+  // ponytail: capped at 250 open + 30 done issues across the workspace (one page
+  // each); paginate or filter by team if a workspace outgrows that.
+  const data = await linear<{ open: { nodes: RawIssue[] }; done: { nodes: RawIssue[] } }>(
+    `query Board {
+      open: issues(first: 250, orderBy: updatedAt, filter: { state: { type: { in: ["triage", "backlog", "unstarted", "started"] } } }) { nodes { ...Card } }
+      done: issues(first: 30, orderBy: updatedAt, filter: { state: { type: { eq: "completed" } } }) { nodes { ...Card } }
     }
     ${CARD_FIELDS}`,
-    { teamId },
   );
-  const cards = [...team.open.nodes, ...team.done.nodes]
+  const cards = [...data.open.nodes, ...data.done.nodes]
     .map(toCard)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return { team: { id: team.id, key: team.key, name: team.name }, cards };
+  return { cards };
 }
 
 export async function createCard(
-  { teamId, title, body }: RpcInput<typeof createCardRpc>,
+  { teamId, projectId, title, body }: RpcInput<typeof createCardRpc>,
 ): Promise<RpcOutput<typeof createCardRpc>> {
   const { issueCreate } = await linear<{ issueCreate: { issue: RawIssue } }>(
     `mutation Create($input: IssueCreateInput!) { issueCreate(input: $input) { issue { ...Card } } }
     ${CARD_FIELDS}`,
-    { input: { teamId, title, description: body || undefined } },
+    { input: { teamId, projectId: projectId ?? undefined, title, description: body || undefined } },
   );
   return toCard(issueCreate.issue);
 }

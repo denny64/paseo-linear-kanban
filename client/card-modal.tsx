@@ -1,14 +1,14 @@
-import type { PaseoAgentConfig, PaseoApi } from "./paseo-types";
+import type { PaseoAgentConfig, PaseoApi, PaseoProject } from "./paseo-types";
 import { usePaseo, useSettings } from "@getpaseo/plugin/client";
 import { Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { ExternalLink, SettingsCard, SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { boardSettings, type Card, COLUMNS, type ColumnId } from "../shared/board";
-import { Button, errorMessage, inputStyle, LabelPill, type Theme } from "./controls";
+import { Button, errorMessage, inputStyle, LabelPill, ProjectTag, type Theme } from "./controls";
 import { type AgentImage, ImageAttachments, useImages } from "./images";
-import type { BoardCard } from "./use-boards";
+import { repoKey } from "./use-boards";
 
 // "Fixes ENG-12" links the pull request in Linear, which moves the issue to
 // In Review when it opens and Done when it merges (with the GitHub integration on).
@@ -79,20 +79,43 @@ async function loadAgentOptions(paseo: PaseoApi, cwd: string) {
   return { options, loading: entries.some((entry) => entry.status === "loading") };
 }
 
-// Agent and thinking level for a new agent in `cwd`, defaulting to the last ones started.
-export function useAgentPicker(cwd: string) {
+// Paseo's git projects: where an agent's worktree can come from.
+function useGitProjects() {
+  const paseo = usePaseo();
+  const queryClient = useQueryClient();
+  useEffect(
+    () => paseo.projects.subscribe(() => queryClient.invalidateQueries({ queryKey: ["projects"] })),
+    [paseo, queryClient],
+  );
+  return useQuery({
+    queryKey: ["projects"],
+    queryFn: async () => (await paseo.projects.list()).projects.filter((p) => p.projectKind === "git"),
+  });
+}
+
+// Repo, agent and thinking level for a new agent on issues under `linkKey`
+// (see repoKey). Defaults to the repo last used for that key, then the last
+// repo, agent and thinking level used at all.
+export function useAgentPicker(linkKey: string) {
   const paseo = usePaseo();
   const settings = useSettings(boardSettings);
+  const saved = settings.status === "ready" ? settings.values : null;
+  const projects = useGitProjects();
+  const [pickedRepo, setRepo] = useState<string | null>(null);
+  const repos = projects.data ?? [];
+  const project = repos.find((p) => p.projectId === (pickedRepo ?? saved?.repos[linkKey] ?? saved?.repo)) ?? repos[0];
+  const cwd = project?.projectRootPath;
+
   const query = useQuery({
     queryKey: ["agents", cwd],
-    queryFn: () => loadAgentOptions(paseo, cwd),
+    queryFn: () => loadAgentOptions(paseo, cwd!),
+    enabled: !!cwd,
     refetchInterval: (query) => (query.state.data?.loading ? 2_000 : false),
   });
   const [pickedAgent, setAgent] = useState<string | null>(null);
   const [pickedThinking, setThinking] = useState<string | null>(null);
 
   const options = query.data?.options ?? [];
-  const saved = settings.status === "ready" ? settings.values : null;
   const agent = options.find((o) => o.value === (pickedAgent ?? saved?.agent)) ?? options[0];
   // A level the new model doesn't have falls back to its default.
   const thinking =
@@ -101,36 +124,53 @@ export function useAgentPicker(cwd: string) {
     agent?.thinking[0]?.value;
   const config = agent && (thinking ? { ...agent.config, thinkingOptionId: thinking } : agent.config);
 
-  const remember = () => {
-    if (settings.status !== "ready" || !agent) return;
-    const values = { ...settings.values, agent: agent.value, thinking: thinking ?? settings.values.thinking };
-    if (values.agent !== settings.values.agent || values.thinking !== settings.values.thinking) {
-      void settings.save(values, settings.revision);
-    }
+  // One save for every choice: separate saves would race on the settings revision.
+  const remember = (patch: Partial<NonNullable<typeof saved>> = {}) => {
+    if (settings.status !== "ready" || !agent || !project) return;
+    const { values } = settings;
+    void settings.save(
+      {
+        ...values,
+        agent: agent.value,
+        thinking: thinking ?? values.thinking,
+        repo: project.projectId,
+        repos: { ...values.repos, [linkKey]: project.projectId },
+        ...patch,
+      },
+      settings.revision,
+    );
   };
 
-  return { query, options, agent, thinking, config, setAgent, setThinking, remember };
+  return { projects, project, setRepo, query, options, agent, thinking, config, setAgent, setThinking, remember };
 }
 
 export function AgentPicker({ theme, picker }: { theme: Theme; picker: ReturnType<typeof useAgentPicker> }) {
-  const { query, options, agent, thinking } = picker;
-  if (!agent) {
+  const { projects, project, query, options, agent, thinking } = picker;
+  const muted = { color: theme.colors.foregroundMuted, fontSize: 13 };
+  if (!project) {
     return (
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-        {query.isError ? errorMessage(query.error) : query.isLoading || query.data?.loading ? "Loading agents…" : "No agents are ready on this host."}
+      <Text style={muted}>
+        {projects.isError ? errorMessage(projects.error) : projects.isLoading ? "Loading projects…" : "Add a git project in Paseo to start agents."}
       </Text>
     );
   }
   return (
     <SettingsCard>
       <SettingsSelect
-        label="Agent"
-        hint="Runs in a new worktree with this issue attached."
-        value={agent.value}
-        options={options}
-        onValueChange={picker.setAgent}
+        label="Project"
+        hint="The agent works in a new worktree of it, with this issue attached."
+        value={project.projectId}
+        options={projects.data!.map((p) => ({ value: p.projectId, label: p.projectDisplayName }))}
+        onValueChange={picker.setRepo}
       />
-      {thinking ? (
+      {agent ? (
+        <SettingsSelect label="Agent" value={agent.value} options={options} onValueChange={picker.setAgent} />
+      ) : (
+        <Text style={[muted, { padding: 12 }]}>
+          {query.isError ? errorMessage(query.error) : query.isLoading || query.data?.loading ? "Loading agents…" : "No agents are ready on this host."}
+        </Text>
+      )}
+      {agent && thinking ? (
         <SettingsSelect label="Thinking" value={thinking} options={agent.thinking} onValueChange={picker.setThinking} />
       ) : null}
     </SettingsCard>
@@ -140,12 +180,12 @@ export function AgentPicker({ theme, picker }: { theme: Theme; picker: ReturnTyp
 // A fresh worktree per card, so several agents can work the board at once.
 export async function startAgentOn(
   paseo: PaseoApi,
-  card: BoardCard,
+  card: Card,
+  project: PaseoProject,
   config: PaseoAgentConfig,
   prompt: string,
   images: AgentImage[],
 ) {
-  const { project } = card;
   const workspace = await paseo.workspaces.create({
     title: `${card.identifier} ${card.title}`,
     source: { kind: "worktree", cwd: project.projectRootPath, projectId: project.projectId, action: "branch-off" },
@@ -186,7 +226,7 @@ export function CardModal({
   onAgentStarted,
 }: {
   theme: Theme;
-  card: BoardCard;
+  card: Card;
   reference: string;
   onClose(): void;
   onMove(column: ColumnId): void;
@@ -200,8 +240,9 @@ export function CardModal({
         <Text style={{ color: theme.colors.foreground, fontSize: 18, fontWeight: "600", lineHeight: 24 }} selectable>
           {card.title}
         </Text>
-        {card.labels.length > 0 ? (
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        {card.project || card.labels.length > 0 ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+            {card.project ? <ProjectTag theme={theme} name={card.project.name} color={card.project.color} /> : null}
             {card.labels.map((label) => (
               <LabelPill key={label.name} theme={theme} name={label.name} color={label.color} />
             ))}
@@ -260,7 +301,7 @@ export function StartAgentModal({
   onStarted,
 }: {
   theme: Theme;
-  card: BoardCard;
+  card: Card;
   reference: string;
   onClose(): void;
   onStarted(agentId: string): void;
@@ -282,25 +323,26 @@ function StartAgent({
   showHeading = true,
 }: {
   theme: Theme;
-  card: BoardCard;
+  card: Card;
   onStarted(agentId: string): void;
   showHeading?: boolean;
 }) {
   const paseo = usePaseo();
   const toast = useToast();
-  const picker = useAgentPicker(card.project.projectRootPath);
+  const picker = useAgentPicker(repoKey(card.project?.id, card.team.id));
   const [prompt, setPrompt] = useState(() => agentPrompt(card));
   const images = useImages(true, toast.error);
 
   const start = useMutation({
-    mutationFn: (config: PaseoAgentConfig) => startAgentOn(paseo, card, config, prompt, images.images),
+    mutationFn: ({ project, config }: { project: PaseoProject; config: PaseoAgentConfig }) =>
+      startAgentOn(paseo, card, project, config, prompt, images.images),
     onSuccess: (agentId) => {
       picker.remember();
       onStarted(agentId);
     },
     onError: (error) => toast.error(`Couldn't start the agent: ${errorMessage(error)}`),
   });
-  const { config } = picker;
+  const { project, config } = picker;
 
   return (
     <View style={{ gap: 8 }}>
@@ -323,8 +365,8 @@ function StartAgent({
           label={start.isPending ? "Starting…" : "Start agent"}
           icon="Play"
           primary
-          disabled={!config || !prompt.trim() || start.isPending}
-          onPress={() => config && start.mutate(config)}
+          disabled={!project || !config || !prompt.trim() || start.isPending}
+          onPress={() => project && config && start.mutate({ project, config })}
         />
       </View>
     </View>

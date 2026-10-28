@@ -1,9 +1,8 @@
 import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Pressable, Text, View } from "react-native";
-import { COLUMNS, type ColumnId } from "../shared/board";
+import { type Card, COLUMNS, type ColumnId } from "../shared/board";
 import { timeAgo } from "../shared/time";
-import { ColumnHeading, IconButton, LabelPill, TextAction, type Theme } from "./controls";
-import type { BoardCard } from "./use-boards";
+import { ColumnHeading, IconButton, LabelPill, ProjectTag, TextAction, type Theme } from "./controls";
 
 // Every card on one scrolling page, grouped by column in board order.
 export function ListView({
@@ -17,7 +16,7 @@ export function ListView({
 }: {
   theme: Theme;
   compact: boolean;
-  byColumn: Map<ColumnId, BoardCard[]>;
+  byColumn: Map<ColumnId, Card[]>;
   onOpen(key: string): void;
   onStartAgent(key: string): void;
   onArchive(key: string): void;
@@ -57,14 +56,14 @@ export function ListView({
               >
                 {cards.map((card, index) => (
                   <ListRow
-                    key={card.key}
+                    key={card.id}
                     theme={theme}
                     card={card}
                     compact={compact}
                     first={index === 0}
-                    onPress={() => onOpen(card.key)}
-                    onStartAgent={() => onStartAgent(card.key)}
-                    onArchive={() => onArchive(card.key)}
+                    onPress={() => onOpen(card.id)}
+                    onStartAgent={() => onStartAgent(card.id)}
+                    onArchive={() => onArchive(card.id)}
                   />
                 ))}
               </View>
@@ -86,7 +85,7 @@ function ListRow({
   onArchive,
 }: {
   theme: Theme;
-  card: BoardCard;
+  card: Card;
   compact: boolean;
   first: boolean;
   onPress(): void;
@@ -121,7 +120,8 @@ function ListRow({
       >
         {card.title}
       </Text>
-      {/* Labels and assignees need the width; compact rows keep number, title and age. */}
+      {/* Project, labels and assignees need the width; compact rows keep number, title and age. */}
+      {!compact && card.project ? <ProjectTag theme={theme} name={card.project.name} color={card.project.color} /> : null}
       {!compact
         ? card.labels
             .slice(0, 3)

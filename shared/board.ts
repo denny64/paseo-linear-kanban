@@ -13,14 +13,22 @@ export const cardSchema = z.object({
   body: z.string(),
   url: z.string(),
   column: columnIdSchema,
-  // Hex colour without the "#".
+  team: z.object({ id: z.string(), key: z.string(), name: z.string() }),
+  // The card's tag on the board. Colours are hex without the "#".
+  project: z.object({ id: z.string(), name: z.string(), color: z.string() }).nullable(),
   labels: z.array(z.object({ name: z.string(), color: z.string() })),
   assignees: z.array(z.string()),
   updatedAt: z.string(),
 });
 export type Card = z.infer<typeof cardSchema>;
 
-export const teamSchema = z.object({ id: z.string(), key: z.string(), name: z.string() });
+// Teams with their active projects, for "New card".
+export const teamSchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  name: z.string(),
+  projects: z.array(z.object({ id: z.string(), name: z.string() })),
+});
 export type Team = z.infer<typeof teamSchema>;
 
 export const listTeamsRpc = defineRpc({
@@ -29,16 +37,18 @@ export const listTeamsRpc = defineRpc({
   output: z.object({ teams: z.array(teamSchema) }),
 });
 
+// Every team's issues the API key can see, on one board.
 export const loadBoardRpc = defineRpc({
   name: "board.load",
-  input: z.object({ teamId: z.string() }),
-  output: z.object({ team: teamSchema, cards: z.array(cardSchema) }),
+  input: z.object({}),
+  output: z.object({ cards: z.array(cardSchema) }),
 });
 
 export const createCardRpc = defineRpc({
   name: "card.create",
   input: z.object({
     teamId: z.string(),
+    projectId: z.string().nullable(),
     title: z.string().trim().min(1),
     body: z.string(),
   }),
@@ -66,12 +76,12 @@ export const boardSettings = defineSettings({
   schema: z.object({
     // Personal API key from Linear → Settings → Security & access. Read by the daemon.
     apiKey: z.string().nullable().default(null),
-    // Paseo project id → Linear team id. A project's board is its team's issues.
-    teams: z.record(z.string(), z.string()).default({}),
-    // Last opened Paseo project, so the board reopens where you left it.
-    projectId: z.string().nullable().default(null),
-    // Every linked project's issues on one board instead of a single project.
-    allProjects: z.boolean().default(false),
+    // Where agents run: Linear project id (or "team:<id>" for issues without
+    // one) → the Paseo project last picked for it. `repo` is the last pick overall.
+    repos: z.record(z.string(), z.string()).default({}),
+    repo: z.string().nullable().default(null),
+    // Last team and project used for "New card".
+    newCard: z.object({ teamId: z.string(), projectId: z.string().nullable() }).nullable().default(null),
     // Last agent used from "Start agent": "profile:<id>" or "model:<provider>/<model>".
     agent: z.string().nullable().default(null),
     // Last thinking level picked for a model that offers them.

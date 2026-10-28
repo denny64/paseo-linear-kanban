@@ -7,13 +7,12 @@ import {
   Platform,
   View,
 } from "react-native";
-import type { ColumnId } from "../shared/board";
-import type { BoardCard } from "./use-boards";
+import type { Card, ColumnId } from "../shared/board";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Point = { x: number; y: number };
 type Session = {
-  card: BoardCard;
+  card: Card;
   pointer: Point;
   hover: ColumnId | null;
   targets: [ColumnId, Rect][];
@@ -35,13 +34,13 @@ export type CardDrag = ReturnType<typeof useCardDrag>;
 
 // Drag a card onto another column (or column tab). There is no reordering:
 // Cards are sorted by last update, so a drop target is a column, not a slot.
-export function useCardDrag(onDrop: (card: BoardCard, column: ColumnId) => void) {
+export function useCardDrag(onDrop: (card: Card, column: ColumnId) => void) {
   const rootRef = useRef<View>(null);
   const targets = useRef(new Map<ColumnId, View>()).current;
   const position = useRef(new Animated.ValueXY()).current;
   const session = useRef<Session | null>(null);
   const endedAt = useRef(0);
-  const [dragging, setDragging] = useState<{ card: BoardCard; width: number } | null>(null);
+  const [dragging, setDragging] = useState<{ card: Card; width: number } | null>(null);
   const [hover, setHover] = useState<ColumnId | null>(null);
   // Touch scrolls on drag, so there a long press arms the card first.
   const [armed, setArmed] = useState<string | null>(null);
@@ -72,11 +71,11 @@ export function useCardDrag(onDrop: (card: BoardCard, column: ColumnId) => void)
     disarm: () => setArmed(null),
     // Browsers can fire a click on the source card when a drag is released over it.
     justDropped: () => Date.now() - endedAt.current < 300,
-    shouldStart(card: BoardCard, gesture: PanResponderGestureState) {
+    shouldStart(card: Card, gesture: PanResponderGestureState) {
       if (session.current) return false;
-      return Platform.OS === "web" ? Math.hypot(gesture.dx, gesture.dy) > 6 : latest.current.armed === card.key;
+      return Platform.OS === "web" ? Math.hypot(gesture.dx, gesture.dy) > 6 : latest.current.armed === card.id;
     },
-    async start(card: BoardCard, tile: View | null, e: GestureResponderEvent) {
+    async start(card: Card, tile: View | null, e: GestureResponderEvent) {
       const s: Session = { card, pointer: pointOf(e), hover: null, targets: [], offset: null };
       const grabbedAt = s.pointer;
       session.current = s;
@@ -111,7 +110,7 @@ export function useCardDrag(onDrop: (card: BoardCard, column: ColumnId) => void)
 
 // Wraps a card tile. Taps still reach the tile's Pressable; the wrapper only
 // captures the gesture once it becomes a drag.
-export function Draggable({ drag, card, children }: { drag: CardDrag; card: BoardCard; children: ReactNode }) {
+export function Draggable({ drag, card, children }: { drag: CardDrag; card: Card; children: ReactNode }) {
   const ref = useRef<View>(null);
   const latest = useRef({ drag, card });
   latest.current = { drag, card };
@@ -125,7 +124,7 @@ export function Draggable({ drag, card, children }: { drag: CardDrag; card: Boar
       onPanResponderTerminationRequest: () => false,
     }),
   ).current;
-  const lifted = drag.dragging?.card.key === card.key;
+  const lifted = drag.dragging?.card.id === card.id;
   return (
     <View ref={ref} {...responder.panHandlers} style={{ opacity: lifted ? 0.35 : 1 }}>
       {children}
@@ -134,7 +133,7 @@ export function Draggable({ drag, card, children }: { drag: CardDrag; card: Boar
 }
 
 // The card under the pointer. Render it last inside the element that owns rootRef.
-export function DragOverlay({ drag, children }: { drag: CardDrag; children(card: BoardCard): ReactNode }) {
+export function DragOverlay({ drag, children }: { drag: CardDrag; children(card: Card): ReactNode }) {
   if (!drag.dragging) return null;
   return (
     <Animated.View

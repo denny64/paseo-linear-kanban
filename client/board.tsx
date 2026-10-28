@@ -1,52 +1,26 @@
-import type { PaseoProject } from "./paseo-types";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { usePaseo, useSettings } from "@getpaseo/plugin/client";
+import { useSettings } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { boardSettings, COLUMNS, type ColumnId } from "../shared/board";
+import { boardSettings, type Card, COLUMNS, type ColumnId } from "../shared/board";
 import { CardModal, StartAgentModal } from "./card-modal";
-import { Button, ColumnHeading, columnColor, errorMessage, IconButton, LabelPill, TextAction, type Theme } from "./controls";
+import { Button, ColumnHeading, columnColor, errorMessage, IconButton, LabelPill, ProjectTag, TextAction, type Theme } from "./controls";
 import { type CardDrag, DragOverlay, Draggable, useCardDrag } from "./drag";
 import { ListView } from "./list-view";
-import { ApiKeyForm, TeamSelect } from "./linear-settings";
+import { ApiKeyForm } from "./linear-settings";
 import { NewCardModal } from "./new-card-modal";
-import { type BoardCard, type LinkedProject, useArchiveCard, useBoards, useMoveCard, usePutCard } from "./use-boards";
+import { useArchiveCard, useBoard, useMoveCard, usePutCard } from "./use-boards";
 
 type ViewMode = "board" | "list";
 
 export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) {
-  const paseo = usePaseo();
   const toast = useToast();
-  const queryClient = useQueryClient();
   const settings = useSettings(boardSettings);
-
-  const projects = useQuery({
-    queryKey: ["projects"],
-    queryFn: async () =>
-      (await paseo.projects.list()).projects.filter((p) => p.projectKind === "git"),
-  });
-  useEffect(
-    () => paseo.projects.subscribe(() => queryClient.invalidateQueries({ queryKey: ["projects"] })),
-    [paseo, queryClient],
-  );
-
   const values = settings.status === "ready" ? settings.values : null;
-  const showAll = !!values?.allProjects;
-  const project =
-    settings.status === "loading"
-      ? undefined
-      : (projects.data?.find((p) => p.projectId === values?.projectId) ?? projects.data?.[0]);
-  const linked = (p: PaseoProject): LinkedProject[] => {
-    const teamId = values?.teams[p.projectId];
-    return teamId ? [{ project: p, teamId }] : [];
-  };
-  const scope = !values?.apiKey ? [] : showAll ? (projects.data ?? []).flatMap(linked) : project ? linked(project) : [];
 
-  // ponytail: one Linear request per team per refresh, so the all-projects view
-  // polls every 5 min instead of every minute; batch into one GraphQL query if that bites.
-  const boards = useBoards(scope, showAll ? 300_000 : 60_000);
+  const board = useBoard(!!values?.apiKey);
+  const cards = board.data?.cards ?? [];
   const putCard = usePutCard();
   const move = useMoveCard((error) => toast.error(`Couldn't move the card: ${errorMessage(error)}`));
   const archive = useArchiveCard((error) => toast.error(`Couldn't archive the card: ${errorMessage(error)}`));
@@ -56,17 +30,17 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
   const [startFor, setStartFor] = useState<string | null>(null);
   const [clearingDone, setClearingDone] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [pickingProject, setPickingProject] = useState(false);
+  const [editingSettings, setEditingSettings] = useState(false);
   const [compactColumn, setCompactColumn] = useState<ColumnId>("todo");
   // Local override so the toggle flips instantly; the saved setting catches up.
   const [viewOverride, setViewOverride] = useState<ViewMode | null>(null);
   const view = viewOverride ?? values?.view ?? "board";
 
   const byColumn = useMemo(() => {
-    const groups = new Map<ColumnId, BoardCard[]>(COLUMNS.map((c) => [c.id, []]));
-    for (const card of boards.cards) groups.get(card.column)!.push(card);
+    const groups = new Map<ColumnId, Card[]>(COLUMNS.map((c) => [c.id, []]));
+    for (const card of cards) groups.get(card.column)!.push(card);
     return groups;
-  }, [boards.cards]);
+  }, [cards]);
 
   const styles = useMemo(
     () => ({
@@ -80,14 +54,12 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
         paddingTop: layout.compact ? 12 : 20,
         paddingBottom: 12,
       },
-      projectButton: { flexShrink: 1, gap: 2 },
-      projectRow: { flexDirection: "row" as const, alignItems: "center" as const, gap: 6 },
-      projectName: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 20, fontWeight: "600" as const },
+      titleBlock: { flexShrink: 1, gap: 2 },
+      title: { color: theme.colors.foreground, fontSize: layout.compact ? 18 : 20, fontWeight: "600" as const },
       muted: { color: theme.colors.foregroundMuted, fontSize: 12 },
       spacer: { flex: 1 },
       message: { padding: layout.compact ? 16 : 24, gap: 12, alignItems: "flex-start" as const },
       messageText: { color: theme.colors.foregroundMuted, fontSize: 14 },
-      notice: { color: theme.colors.foregroundMuted, fontSize: 12, paddingHorizontal: layout.compact ? 16 : 24, paddingBottom: 8 },
       columns: { flex: 1, flexDirection: "row" as const, gap: 16, paddingHorizontal: 24, paddingBottom: 16 },
       tabs: { flexGrow: 0, paddingHorizontal: 16 },
       tabsContent: { gap: 8, paddingBottom: 8 },
@@ -98,17 +70,13 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
   const saveSettings = (patch: Partial<NonNullable<typeof values>>) => {
     if (settings.status === "ready") void settings.save({ ...settings.values, ...patch }, settings.revision);
   };
-  const selectProject = (next: PaseoProject | "all") => {
-    setPickingProject(false);
-    saveSettings(next === "all" ? { allProjects: true } : { allProjects: false, projectId: next.projectId });
-  };
   const selectView = (next: ViewMode) => {
     setViewOverride(next);
     saveSettings({ view: next });
   };
 
   const archiveKey = (key: string) => {
-    const target = boards.cards.find((c) => c.key === key);
+    const target = cards.find((c) => c.id === key);
     if (target) archive.mutate(target);
   };
   const clearDone = () => {
@@ -119,31 +87,19 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
   };
 
   let body: React.ReactNode;
-  if (projects.isError) {
-    body = <Message styles={styles} text={errorMessage(projects.error)} />;
-  } else if (projects.data && projects.data.length === 0) {
-    body = <Message styles={styles} text="Add a git project in Paseo to get a board for its Linear issues." />;
-  } else if (values && !values.apiKey) {
+  if (values && !values.apiKey) {
     body = (
       <View style={styles.message}>
         <ApiKeyForm theme={theme} intro="Connect Linear to see your issues. The key stays on this Paseo host." />
       </View>
     );
-  } else if (values && !showAll && project && scope.length === 0) {
+  } else if (board.isError && !board.data) {
     body = (
-      <Message styles={styles} text={`Choose the Linear team whose issues belong to ${project.projectDisplayName}.`}>
-        <TeamSelect theme={theme} projectId={project.projectId} />
+      <Message styles={styles} text={errorMessage(board.error)}>
+        <Button theme={theme} label="Try again" icon="RotateCw" onPress={() => board.refetch()} />
       </Message>
     );
-  } else if (values && showAll && projects.data && scope.length === 0) {
-    body = <Message styles={styles} text="No project has a Linear team yet. Pick a project to choose its team." />;
-  } else if (boards.teams.length === 0 && boards.failed.length > 0 && !boards.fetching) {
-    body = (
-      <Message styles={styles} text={errorMessage(boards.failed[0].error)}>
-        <Button theme={theme} label="Try again" icon="RotateCw" onPress={() => boards.refetch()} />
-      </Message>
-    );
-  } else if (!boards.ready || scope.length === 0) {
+  } else if (!board.data) {
     body = <Message styles={styles} text="Loading issues…" />;
   } else if (view === "list") {
     body = (
@@ -207,97 +163,67 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
     );
   }
 
-  const card = boards.cards.find((c) => c.key === openCard);
-  const startCard = boards.cards.find((c) => c.key === startFor);
-  const agentStarted = (started: BoardCard, agentId: string) => {
+  const card = cards.find((c) => c.id === openCard);
+  const startCard = cards.find((c) => c.id === startFor);
+  const agentStarted = (started: Card, agentId: string) => {
     setOpenCard(null);
     setStartFor(null);
     move.mutate({ card: started, column: "in-progress" });
     navigation?.openAgent({ agentId });
   };
-  // Some teams loaded and some didn't: say which, without hiding the rest.
-  const skipped = showAll && boards.teams.length > 0 ? boards.failed.map((f) => f.project.projectDisplayName) : [];
+  const teamCount = new Set(cards.map((c) => c.team.id)).size;
 
   return (
     <View ref={drag.rootRef} style={styles.screen}>
       <View style={styles.header}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Choose project"
-          onPress={() => setPickingProject(true)}
-          style={styles.projectButton}
-        >
-          <View style={styles.projectRow}>
-            <Text style={styles.projectName} numberOfLines={1}>
-              {showAll ? "All projects" : (project?.projectDisplayName ?? "Kanban")}
-            </Text>
-            <Icon name="ChevronDown" size={16} color={theme.colors.foregroundMuted} />
-          </View>
-          {boards.teams.length > 0 ? (
+        <View style={styles.titleBlock}>
+          <Text style={styles.title} numberOfLines={1}>
+            Linear
+          </Text>
+          {board.data ? (
             <Text style={styles.muted}>
-              {showAll
-                ? `${boards.teams.length} ${boards.teams.length === 1 ? "team" : "teams"} · Linear`
-                : `${boards.teams[0].team.name} · Linear`}
+              {cards.length} {cards.length === 1 ? "issue" : "issues"} · {teamCount} {teamCount === 1 ? "team" : "teams"}
             </Text>
           ) : null}
-        </Pressable>
+        </View>
         <View style={styles.spacer} />
         <ViewToggle theme={theme} view={view} onChange={selectView} />
         <Button
           theme={theme}
           icon="RotateCw"
           accessibilityLabel="Refresh"
-          disabled={scope.length === 0 || boards.fetching}
-          onPress={() => boards.refetch()}
+          disabled={!values?.apiKey || board.isFetching}
+          onPress={() => board.refetch()}
+        />
+        <Button
+          theme={theme}
+          icon="Settings"
+          accessibilityLabel="Linear settings"
+          disabled={!values?.apiKey}
+          onPress={() => setEditingSettings(true)}
         />
         <Button
           theme={theme}
           label="New card"
           icon="Plus"
           primary
-          disabled={boards.teams.length === 0}
+          disabled={!board.data}
           onPress={() => setCreating(true)}
         />
       </View>
 
-      {skipped.length > 0 ? (
-        <Text style={styles.notice} numberOfLines={2}>
-          Couldn't load {skipped.join(", ")}. Open {skipped.length === 1 ? "it" : "one"} on its own to see why.
-        </Text>
-      ) : null}
-
       {body}
 
-      <Modal title="Choose project" open={pickingProject} onOpenChange={setPickingProject}>
+      <Modal title="Linear settings" open={editingSettings} onOpenChange={setEditingSettings}>
         <Modal.Content>
-          <ProjectRow
-            theme={theme}
-            title="All projects"
-            subtitle="Every git project on this host, on one board"
-            selected={showAll}
-            onPress={() => selectProject("all")}
-          />
-          {(projects.data ?? []).map((p) => (
-            <ProjectRow
-              key={p.projectId}
-              theme={theme}
-              title={p.projectDisplayName}
-              subtitle={p.projectRootPath}
-              selected={!showAll && p.projectId === project?.projectId}
-              onPress={() => selectProject(p)}
-            />
-          ))}
-          {values?.apiKey && !showAll && project ? <TeamSelect theme={theme} projectId={project.projectId} /> : null}
-          {values?.apiKey ? <ApiKeyForm theme={theme} /> : null}
+          <ApiKeyForm theme={theme} />
         </Modal.Content>
       </Modal>
 
-      {boards.teams.length > 0 ? (
+      {board.data ? (
         <NewCardModal
           theme={theme}
           open={creating}
-          targets={boards.teams}
-          defaultProjectId={project?.projectId}
           onOpenChange={setCreating}
           onCreated={putCard}
           onAgentStarted={agentStarted}
@@ -423,7 +349,7 @@ function Column({
   theme: Theme;
   column?: ColumnId;
   title?: string;
-  cards: BoardCard[];
+  cards: Card[];
   drag: CardDrag;
   compact?: boolean;
   onOpen(key: string): void;
@@ -469,14 +395,14 @@ function Column({
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13, paddingVertical: 8 }}>No cards</Text>
         ) : (
           cards.map((card) => (
-            <Draggable key={card.key} drag={drag} card={card}>
+            <Draggable key={card.id} drag={drag} card={card}>
               <CardTile
                 theme={theme}
                 card={card}
-                onPress={() => !drag.justDropped() && onOpen(card.key)}
-                onStartAgent={() => onStartAgent(card.key)}
-                onArchive={() => onArchive(card.key)}
-                onLongPress={drag.arm ? () => drag.arm!(card.key) : undefined}
+                onPress={() => !drag.justDropped() && onOpen(card.id)}
+                onStartAgent={() => onStartAgent(card.id)}
+                onArchive={() => onArchive(card.id)}
+                onLongPress={drag.arm ? () => drag.arm!(card.id) : undefined}
                 onPressOut={drag.disarm}
               />
             </Draggable>
@@ -498,7 +424,7 @@ function CardTile({
   onArchive,
 }: {
   theme: Theme;
-  card: BoardCard;
+  card: Card;
   // The copy that follows the pointer while dragging.
   lifted?: boolean;
   onPress?(): void;
@@ -527,9 +453,11 @@ function CardTile({
       })}
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, color: theme.colors.foregroundMuted, fontSize: 12 }} numberOfLines={1} selectable={false}>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }} numberOfLines={1} selectable={false}>
           {ref}
         </Text>
+        {card.project ? <ProjectTag theme={theme} name={card.project.name} color={card.project.color} /> : null}
+        <View style={{ flex: 1 }} />
         {onStartAgent && card.column !== "done" ? (
           <IconButton theme={theme} icon="Play" accessibilityLabel={`Start an agent on ${ref}`} onPress={onStartAgent} />
         ) : null}
@@ -598,45 +526,6 @@ function ColumnTab({
       <Text style={{ color: selected ? theme.colors.foreground : theme.colors.foregroundMuted, fontSize: 13 }}>
         {title} {count}
       </Text>
-    </Pressable>
-  );
-}
-
-function ProjectRow({
-  theme,
-  title,
-  subtitle,
-  selected,
-  onPress,
-}: {
-  theme: Theme;
-  title: string;
-  subtitle: string;
-  selected: boolean;
-  onPress(): void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected }}
-      accessibilityLabel={title}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 12,
-        padding: 12,
-        borderRadius: 8,
-        backgroundColor: pressed || selected ? theme.colors.surface2 : "transparent",
-      })}
-    >
-      <View style={{ flex: 1, gap: 2 }}>
-        <Text style={{ color: theme.colors.foreground, fontSize: 14 }}>{title}</Text>
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }} numberOfLines={1}>
-          {subtitle}
-        </Text>
-      </View>
-      {selected ? <Icon name="Check" size={16} color={theme.colors.accent} /> : null}
     </Pressable>
   );
 }

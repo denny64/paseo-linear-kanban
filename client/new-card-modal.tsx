@@ -1,83 +1,101 @@
-import type { PaseoProject } from "./paseo-types";
-import { usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc, useSettings } from "@getpaseo/plugin/client";
 import { Modal, TextInput, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { SettingsCard, SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { type Card, createCardRpc, type Team } from "../shared/board";
+import { boardSettings, type Card, createCardRpc } from "../shared/board";
 import { AgentPicker, agentPrompt, startAgentOn, useAgentPicker } from "./card-modal";
 import { Button, errorMessage, inputStyle, type Theme } from "./controls";
 import { ImageAttachments, useImages } from "./images";
-import { type BoardCard, boardCard } from "./use-boards";
+import { useTeams } from "./linear-settings";
+import { repoKey } from "./use-boards";
+
+const NO_PROJECT = "";
 
 export function NewCardModal({
   theme,
   open,
-  targets,
-  defaultProjectId,
   onOpenChange,
   onCreated,
   onAgentStarted,
 }: {
   theme: Theme;
   open: boolean;
-  // Teams the new issue can go to: one on a project board, all of them on "All projects".
-  targets: { project: PaseoProject; team: Team }[];
-  defaultProjectId?: string;
   onOpenChange(open: boolean): void;
-  onCreated(team: Team, card: Card): void;
-  onAgentStarted(card: BoardCard, agentId: string): void;
+  onCreated(card: Card): void;
+  onAgentStarted(card: Card, agentId: string): void;
 }) {
   const paseo = usePaseo();
   const toast = useToast();
+  const settings = useSettings(boardSettings);
+  const saved = settings.status === "ready" ? settings.values.newCard : null;
   const createCard = useRpc(createCardRpc);
+  const teams = useTeams(open);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [picked, setPicked] = useState<string | null>(null);
-  const target =
-    targets.find((t) => t.project.projectId === (picked ?? defaultProjectId)) ?? targets[0];
-  const picker = useAgentPicker(target.project.projectRootPath);
+  const [picked, setPicked] = useState<{ teamId: string; projectId: string | null } | null>(null);
+
+  // Defaults to the team and project of the last card you created.
+  const choice = picked ?? saved;
+  const team = teams.data?.teams.find((t) => t.id === choice?.teamId) ?? teams.data?.teams[0];
+  const projectId = team?.projects.some((p) => p.id === choice?.projectId) ? choice!.projectId : null;
+  const picker = useAgentPicker(repoKey(projectId, team?.id));
   const images = useImages(open, toast.error);
+
   const create = useMutation({
     mutationFn: async (withAgent: boolean) => {
-      const card = boardCard(await createCard({ teamId: target.team.id, title, body }), target.team, target.project);
-      onCreated(target.team, card);
+      if (!team) return;
+      const card = await createCard({ teamId: team.id, projectId, title, body });
+      onCreated(card);
       setTitle("");
       setBody("");
-      if (withAgent && picker.config) {
+      const newCard = { teamId: team.id, projectId };
+      if (withAgent && picker.project && picker.config) {
         // The issue exists either way, so a failed start only costs the agent.
         try {
-          const agentId = await startAgentOn(paseo, card, picker.config, agentPrompt(card), images.images);
-          picker.remember();
+          const agentId = await startAgentOn(paseo, card, picker.project, picker.config, agentPrompt(card), images.images);
+          picker.remember({ newCard });
           onAgentStarted(card, agentId);
         } catch (error) {
           toast.error(`Created ${card.identifier}, but couldn't start the agent: ${errorMessage(error)}`);
         }
+      } else if (settings.status === "ready") {
+        void settings.save({ ...settings.values, newCard }, settings.revision);
       }
       images.clear();
       onOpenChange(false);
     },
     onError: (error) => toast.error(`Couldn't create the card: ${errorMessage(error)}`),
   });
-  const submit = (withAgent: boolean) => title.trim() && !create.isPending && create.mutate(withAgent);
+  const submit = (withAgent: boolean) => title.trim() && team && !create.isPending && create.mutate(withAgent);
 
   return (
     <Modal title="New card" open={open} onOpenChange={onOpenChange}>
       <Modal.Content>
-        {targets.length > 1 ? (
+        {team ? (
           <SettingsCard>
             <SettingsSelect
-              label="Project"
-              value={target.project.projectId}
-              options={targets.map((t) => ({ label: t.project.projectDisplayName, value: t.project.projectId }))}
-              onValueChange={setPicked}
+              label="Team"
+              value={team.id}
+              options={teams.data!.teams.map((t) => ({ value: t.id, label: `${t.name} (${t.key})` }))}
+              onValueChange={(teamId) => setPicked({ teamId, projectId: null })}
+            />
+            <SettingsSelect
+              label="Linear project"
+              value={projectId ?? NO_PROJECT}
+              options={[
+                { value: NO_PROJECT, label: "No project" },
+                ...team.projects.map((p) => ({ value: p.id, label: p.name })),
+              ]}
+              onValueChange={(id) => setPicked({ teamId: team.id, projectId: id || null })}
             />
           </SettingsCard>
-        ) : null}
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-          Creates an issue in {target.team.name} ({target.team.key}).
-        </Text>
+        ) : (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
+            {teams.isError ? errorMessage(teams.error) : "Loading Linear teams…"}
+          </Text>
+        )}
         <TextInput
           accessibilityLabel="Title"
           value={title}
@@ -105,14 +123,14 @@ export function NewCardModal({
             label={create.isPending && !create.variables ? "Creating…" : "Create card"}
             icon="Plus"
             primary
-            disabled={!title.trim() || create.isPending}
+            disabled={!title.trim() || !team || create.isPending}
             onPress={() => submit(false)}
           />
           <Button
             theme={theme}
             label={create.isPending && create.variables ? "Starting…" : "Create and start agent"}
             icon="Play"
-            disabled={!title.trim() || !picker.config || create.isPending}
+            disabled={!title.trim() || !team || !picker.config || create.isPending}
             onPress={() => submit(true)}
           />
         </View>

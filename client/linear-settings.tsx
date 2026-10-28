@@ -1,10 +1,10 @@
 import { useRpc, useSettings } from "@getpaseo/plugin/client";
-import { ExternalLink, SettingsCard, SettingsInput, type SettingsInputHandle, SettingsSelect } from "@getpaseo/plugin/client/ui";
+import { ExternalLink, SettingsCard, SettingsInput, type SettingsInputHandle } from "@getpaseo/plugin/client/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { boardSettings, listTeamsRpc } from "../shared/board";
-import { Button, errorMessage, type Theme } from "./controls";
+import { Button, type Theme } from "./controls";
 
 export function useTeams(enabled: boolean) {
   const listTeams = useRpc(listTeamsRpc);
@@ -42,33 +42,5 @@ export function ApiKeyForm({ theme, intro }: { theme: Theme; intro?: string }) {
         <ExternalLink href="https://linear.app/settings/account/security">Create a key in Linear</ExternalLink>
       </View>
     </View>
-  );
-}
-
-export function TeamSelect({ theme, projectId }: { theme: Theme; projectId: string }) {
-  const settings = useSettings(boardSettings);
-  const ready = settings.status === "ready" ? settings : null;
-  const teams = useTeams(!!ready?.values.apiKey);
-  if (!ready) return null;
-  const { values } = ready;
-  if (!teams.data) {
-    return (
-      <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
-        {teams.isError ? errorMessage(teams.error) : "Loading Linear teams…"}
-      </Text>
-    );
-  }
-  return (
-    <SettingsCard>
-      <SettingsSelect
-        label="Linear team"
-        hint="This project's board shows the team's issues."
-        value={values.teams[projectId] ?? ""}
-        options={teams.data.teams.map((t) => ({ value: t.id, label: `${t.name} (${t.key})` }))}
-        onValueChange={(teamId) =>
-          void settings.save({ ...values, teams: { ...values.teams, [projectId]: teamId } }, ready.revision)
-        }
-      />
-    </SettingsCard>
   );
 }
