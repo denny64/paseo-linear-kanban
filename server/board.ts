@@ -1,159 +1,135 @@
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import {
   archiveCardRpc,
+  type Card,
   createCardRpc,
+  listTeamsRpc,
   loadBoardRpc,
   moveCardRpc,
 } from "../shared/board";
-import { ARCHIVED_LABEL, KANBAN_LABELS, columnFor, labelChanges } from "../shared/columns";
-import { gh } from "./gh";
+import { columnFor, stateFor, type WorkflowState } from "../shared/columns";
+import { linear } from "./linear";
 
-const ISSUE_FIELDS = "number,title,body,url,state,stateReason,labels,assignees,updatedAt,closedByPullRequestsReferences";
-const reposWithLabels = new Set<string>();
-// ponytail: a checkout's GitHub remote is resolved once per daemon process;
-// `paseo plugin reload` picks up a changed remote.
-const repoByCwd = new Map<string, RpcOutput<typeof loadBoardRpc>["repo"]>();
+const CARD_FIELDS = `
+  fragment Card on Issue {
+    id identifier title description url updatedAt
+    state { name type }
+    labels { nodes { name color } }
+    assignee { displayName }
+  }
+`;
 
 type RawIssue = {
-  number: number;
+  id: string;
+  identifier: string;
   title: string;
-  body: string | null;
+  description: string | null;
   url: string;
-  state: string;
-  stateReason: string | null;
-  labels: { name: string; color: string }[];
-  assignees: { login: string }[];
   updatedAt: string;
-  // Open pull requests that will close this issue when merged.
-  closedByPullRequestsReferences?: { number: number }[];
+  state: { name: string; type: string };
+  labels: { nodes: { name: string; color: string }[] };
+  assignee: { displayName: string } | null;
 };
 
-function toCard(raw: RawIssue): RpcOutput<typeof createCardRpc> {
-  const labelNames = raw.labels.map((label) => label.name);
+function toCard(raw: RawIssue): Card {
   return {
-    number: raw.number,
+    id: raw.id,
+    identifier: raw.identifier,
     title: raw.title,
-    body: raw.body ?? "",
+    body: raw.description ?? "",
     url: raw.url,
-    column: columnFor({
-      state: raw.state,
-      labels: labelNames,
-      hasOpenPullRequest: (raw.closedByPullRequestsReferences?.length ?? 0) > 0,
-    }),
-    labels: raw.labels
-      .filter((label) => !KANBAN_LABELS.includes(label.name) && label.name !== ARCHIVED_LABEL)
-      .map(({ name, color }) => ({ name, color })),
-    assignees: raw.assignees.map((assignee) => assignee.login),
+    // Only reached for canceled issues right after a move, which can't target canceled.
+    column: columnFor(raw.state) ?? "todo",
+    labels: raw.labels.nodes.map(({ name, color }) => ({ name, color: color.replace(/^#/, "") })),
+    assignees: raw.assignee ? [raw.assignee.displayName] : [],
     updatedAt: raw.updatedAt,
   };
 }
 
-export async function loadBoard(
-  { cwd }: RpcInput<typeof loadBoardRpc>,
-): Promise<RpcOutput<typeof loadBoardRpc>> {
-  let repo = repoByCwd.get(cwd);
-  if (!repo) {
-    try {
-      repo = JSON.parse(await gh(["repo", "view", "--json", "nameWithOwner,url"], cwd)) as RpcOutput<typeof loadBoardRpc>["repo"];
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`No GitHub repository found for this project: ${message}`);
-    }
-    repoByCwd.set(cwd, repo);
-  }
-
-  // ponytail: capped at 500 open + 30 closed issues; paginate if a board outgrows that.
-  const [openOutput, closedOutput] = await Promise.all([
-    listIssues(repo.nameWithOwner, "open", 500),
-    listIssues(repo.nameWithOwner, "closed", 30),
-  ]);
-  const openIssues = JSON.parse(openOutput) as RawIssue[];
-  const closedIssues = (JSON.parse(closedOutput) as RawIssue[]).filter(
-    (issue) => issue.stateReason !== "NOT_PLANNED" && issue.stateReason !== "DUPLICATE",
+export async function listTeams(): Promise<RpcOutput<typeof listTeamsRpc>> {
+  const data = await linear<{ teams: { nodes: { id: string; key: string; name: string }[] } }>(
+    `query { teams(first: 250) { nodes { id key name } } }`,
   );
-  const cards = [...openIssues, ...closedIssues]
-    .filter((issue) => !issue.labels.some((label) => label.name === ARCHIVED_LABEL))
-    .map(toCard)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-  return { repo, cards };
+  return { teams: data.teams.nodes.sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
-function listIssues(repo: string, state: "open" | "closed", limit: number): Promise<string> {
-  return gh(["issue", "list", "--repo", repo, "--state", state, "--limit", String(limit), "--json", ISSUE_FIELDS]);
+export async function loadBoard({ teamId }: RpcInput<typeof loadBoardRpc>): Promise<RpcOutput<typeof loadBoardRpc>> {
+  // ponytail: capped at 250 open + 30 done issues (one page each); paginate if a team outgrows that.
+  const { team } = await linear<{
+    team: { id: string; key: string; name: string; open: { nodes: RawIssue[] }; done: { nodes: RawIssue[] } };
+  }>(
+    `query Board($teamId: String!) {
+      team(id: $teamId) {
+        id key name
+        open: issues(first: 250, orderBy: updatedAt, filter: { state: { type: { in: ["triage", "backlog", "unstarted", "started"] } } }) { nodes { ...Card } }
+        done: issues(first: 30, orderBy: updatedAt, filter: { state: { type: { eq: "completed" } } }) { nodes { ...Card } }
+      }
+    }
+    ${CARD_FIELDS}`,
+    { teamId },
+  );
+  const cards = [...team.open.nodes, ...team.done.nodes]
+    .map(toCard)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { team: { id: team.id, key: team.key, name: team.name }, cards };
 }
 
 export async function createCard(
-  { repo, title, body }: RpcInput<typeof createCardRpc>,
+  { teamId, title, body }: RpcInput<typeof createCardRpc>,
 ): Promise<RpcOutput<typeof createCardRpc>> {
-  const url = await gh(["issue", "create", "--repo", repo, "--title", title, "--body", body]);
-  const match = url.trim().match(/\/(\d+)\/?$/);
-  if (!match) throw new Error(`Could not parse issue number from GitHub CLI output: ${url.trim()}`);
-
-  const issue = JSON.parse(
-    await gh(["issue", "view", match[1], "--repo", repo, "--json", ISSUE_FIELDS]),
-  ) as RawIssue;
-  return toCard(issue);
-}
-
-const LABELS = [
-  { name: "kanban:in-progress", color: "FBCA04", description: "Kanban: in progress" },
-  { name: "kanban:in-review", color: "8250DF", description: "Kanban: in review" },
-  { name: ARCHIVED_LABEL, color: "D0D7DE", description: "Kanban: archived, hidden from the board" },
-];
-
-export async function ensureLabels(repo: string): Promise<void> {
-  if (reposWithLabels.has(repo)) return;
-  await Promise.all(
-    LABELS.map((l) =>
-      gh(["label", "create", l.name, "--repo", repo, "--color", l.color, "--description", l.description, "--force"]),
-    ),
+  const { issueCreate } = await linear<{ issueCreate: { issue: RawIssue } }>(
+    `mutation Create($input: IssueCreateInput!) { issueCreate(input: $input) { issue { ...Card } } }
+    ${CARD_FIELDS}`,
+    { input: { teamId, title, description: body || undefined } },
   );
-  reposWithLabels.add(repo);
+  return toCard(issueCreate.issue);
 }
 
-export async function moveCard(
-  { repo, number, column }: RpcInput<typeof moveCardRpc>,
-): Promise<RpcOutput<typeof moveCardRpc>> {
-  const current = JSON.parse(
-    await gh(["issue", "view", String(number), "--repo", repo, "--json", "state,labels"]),
-  ) as Pick<RawIssue, "state" | "labels">;
-  const currentLabelNames = current.labels.map((label) => label.name);
-  const { add, remove } = labelChanges(currentLabelNames, column);
-
-  if (add.length > 0) await ensureLabels(repo);
-
-  if (column === "done" && current.state.toUpperCase() === "OPEN") {
-    await gh(["issue", "close", String(number), "--repo", repo, "--reason", "completed"]);
-  } else if (column !== "done" && current.state.toUpperCase() === "CLOSED") {
-    await gh(["issue", "reopen", String(number), "--repo", repo]);
-  }
-
-  if (add.length > 0 || remove.length > 0) {
-    const args = ["issue", "edit", String(number), "--repo", repo];
-    if (add.length > 0) args.push("--add-label", add.join(","));
-    if (remove.length > 0) args.push("--remove-label", remove.join(","));
-    await gh(args);
-  }
-
-  const issue = JSON.parse(
-    await gh(["issue", "view", String(number), "--repo", repo, "--json", ISSUE_FIELDS]),
-  ) as RawIssue;
-  return toCard(issue);
+async function issueState(id: string) {
+  const { issue } = await linear<{
+    issue: { state: { type: string }; team: { name: string; states: { nodes: WorkflowState[] } } };
+  }>(
+    `query State($id: String!) {
+      issue(id: $id) { state { type } team { name states { nodes { id name type position } } } }
+    }`,
+    { id },
+  );
+  return issue;
 }
 
-export async function archiveCard(
-  { repo, number }: RpcInput<typeof archiveCardRpc>,
-): Promise<RpcOutput<typeof archiveCardRpc>> {
-  const { state } = JSON.parse(
-    await gh(["issue", "view", String(number), "--repo", repo, "--json", "state"]),
-  ) as Pick<RawIssue, "state">;
-  if (state.toUpperCase() === "CLOSED") {
-    // Already done: hide it with a label so GitHub still says it was completed.
-    await ensureLabels(repo);
-    await gh(["issue", "edit", String(number), "--repo", repo, "--add-label", ARCHIVED_LABEL]);
+async function setState(id: string, stateId: string): Promise<RawIssue> {
+  const { issueUpdate } = await linear<{ issueUpdate: { issue: RawIssue } }>(
+    `mutation Move($id: String!, $stateId: String!) {
+      issueUpdate(id: $id, input: { stateId: $stateId }) { issue { ...Card } }
+    }
+    ${CARD_FIELDS}`,
+    { id, stateId },
+  );
+  return issueUpdate.issue;
+}
+
+export async function moveCard({ id, column }: RpcInput<typeof moveCardRpc>): Promise<RpcOutput<typeof moveCardRpc>> {
+  const { team } = await issueState(id);
+  const state = stateFor(team.states.nodes, column);
+  if (!state) {
+    throw new Error(
+      column === "in-review"
+        ? `${team.name} has no review state. Add a started state named "In Review" to its workflow in Linear.`
+        : `${team.name} has no workflow state for that column.`,
+    );
+  }
+  return toCard(await setState(id, state.id));
+}
+
+export async function archiveCard({ id }: RpcInput<typeof archiveCardRpc>): Promise<RpcOutput<typeof archiveCardRpc>> {
+  const issue = await issueState(id);
+  if (issue.state.type === "completed") {
+    // Already done: archive it so Linear still says it was completed.
+    await linear(`mutation Archive($id: String!) { issueArchive(id: $id) { success } }`, { id });
   } else {
-    await gh(["issue", "close", String(number), "--repo", repo, "--reason", "not planned"]);
+    const canceled = stateFor(issue.team.states.nodes, "canceled");
+    if (!canceled) throw new Error(`${issue.team.name} has no canceled state in Linear.`);
+    await setState(id, canceled.id);
   }
   return {};
 }

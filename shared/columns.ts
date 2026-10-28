@@ -1,42 +1,32 @@
 // No imports: the test runs this file directly under Node's type stripping.
 
-// The board has no storage of its own. A card is a GitHub issue and its column
-// is derived from the issue: closed = done, an open linked pull request = in
-// review, otherwise its kanban label, else todo.
+// The board has no storage of its own. A card is a Linear issue and its column
+// is derived from the issue's workflow state: completed = done, a started state
+// named like "In Review" = in review, any other started state = in progress,
+// otherwise todo. Canceled issues aren't on the board.
 export const COLUMNS = [
-  { id: "todo", title: "To do", label: null },
-  { id: "in-progress", title: "In progress", label: "kanban:in-progress" },
-  { id: "in-review", title: "In review", label: "kanban:in-review" },
-  { id: "done", title: "Done", label: null },
+  { id: "todo", title: "To do" },
+  { id: "in-progress", title: "In progress" },
+  { id: "in-review", title: "In review" },
+  { id: "done", title: "Done" },
 ] as const;
 
 export type ColumnId = (typeof COLUMNS)[number]["id"];
 
-export const KANBAN_LABELS: readonly string[] = COLUMNS.flatMap((c) => (c.label ? [c.label] : []));
+export type WorkflowState = { id: string; name: string; type: string; position: number };
 
-// Hides a done card without changing why the issue was closed.
-export const ARCHIVED_LABEL = "kanban:archived";
-
-export function columnFor(issue: { state: string; labels: readonly string[]; hasOpenPullRequest?: boolean }): ColumnId {
-  if (issue.state.toUpperCase() === "CLOSED") return "done";
-  // A pull request that will close the issue ("Closes #N") means it's in review,
-  // whatever the labels say. Merging closes the issue, which makes it done.
-  if (issue.hasOpenPullRequest) return "in-review";
-  // Later columns win when an issue carries more than one kanban label.
-  for (const column of [...COLUMNS].reverse()) {
-    if (column.label && issue.labels.includes(column.label)) return column.id;
-  }
-  return "todo";
+export function columnFor(state: { name: string; type: string }): ColumnId | null {
+  if (state.type === "completed") return "done";
+  if (state.type === "canceled") return null;
+  if (state.type === "started") return /review/i.test(state.name) ? "in-review" : "in-progress";
+  return "todo"; // triage, backlog, unstarted
 }
 
-// Label edits that put an issue in `target`. Open/close is handled separately.
-export function labelChanges(
-  current: readonly string[],
-  target: ColumnId,
-): { add: string[]; remove: string[] } {
-  const wanted = COLUMNS.find((c) => c.id === target)?.label ?? null;
-  return {
-    add: wanted && !current.includes(wanted) ? [wanted] : [],
-    remove: current.filter((l) => KANBAN_LABELS.includes(l) && l !== wanted),
-  };
+// The team state a card moves to for `column`. Todo prefers "Todo" over
+// "Backlog" over "Triage"; otherwise the first state in the team's order.
+export function stateFor(states: readonly WorkflowState[], column: ColumnId | "canceled"): WorkflowState | undefined {
+  const rank = (s: WorkflowState) => ["unstarted", "backlog", "triage"].indexOf(s.type);
+  return states
+    .filter((s) => (column === "canceled" ? s.type === "canceled" : columnFor(s) === column))
+    .sort((a, b) => rank(a) - rank(b) || a.position - b.position)[0];
 }

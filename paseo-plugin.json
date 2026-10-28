@@ -1,5 +1,5 @@
 {
-  "id": "paseo-github-kanban",
+  "id": "paseo-linear-kanban",
   "requirements": {
     "paseo": ">=0.9.2"
   }

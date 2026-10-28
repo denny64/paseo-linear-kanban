@@ -1,41 +1,45 @@
-# GitHub Kanban for Paseo
+# Linear Kanban for Paseo
 
-A kanban board for [Paseo](https://paseo.sh) that stores everything in GitHub issues on the project's own repository. It has no database, no extra service and no token to set up.
+A kanban board for [Paseo](https://paseo.sh) that stores everything in [Linear](https://linear.app) issues. It has no database and no extra service; the board is your Linear team's workflow.
 
 Each card is an issue. Pick a card, choose an agent, and Paseo starts it in a new worktree with the issue attached.
 
 ## Install
 
 ```bash
-paseo plugin add denny64/paseo-github-kanban
+paseo plugin add denny64/paseo-linear-kanban
 ```
 
-Open **Kanban** in the Paseo sidebar and choose a project.
+Open **Kanban** in the Paseo sidebar and choose a project. The first time, paste a Linear personal API key (Linear → Settings → Security & access) and pick the Linear team whose issues belong to the project.
 
 This plugin needs:
 
 - Paseo 0.9.2 or later.
-- The [GitHub CLI](https://cli.github.com) installed and signed in (`gh auth login`) on the machine running the Paseo daemon.
-- A git project whose remote is on GitHub.
+- A Linear personal API key. It's saved in the plugin's host settings on the machine running the Paseo daemon, which calls Linear with it.
+- A git project in Paseo for each team you link, since agents run in worktrees of it.
 
-## How the board maps to GitHub
+## How the board maps to Linear
 
-| Column      | GitHub issue                         |
-| ----------- | ------------------------------------ |
-| To do       | Open, without a kanban label         |
-| In progress | Open, labelled `kanban:in-progress`  |
-| In review   | Open, with an open pull request that closes it, or labelled `kanban:in-review` |
-| Done        | Closed as completed                  |
+| Column      | Linear workflow state                                       |
+| ----------- | ----------------------------------------------------------- |
+| To do       | Triage, Backlog or Unstarted (such as **Todo**)              |
+| In progress | Started, except review states                               |
+| In review   | A started state whose name contains "review" (**In Review**) |
+| Done        | Completed                                                   |
 
-Drag a card to another column to move it. On touch screens, long-press it first, and on a phone drop it on the column tabs. You can also use the buttons in the card view. Moving a card changes its label, or closes or reopens the issue. You can manage the same board from GitHub, the `gh` CLI, or an agent. The labels are created the first time you move a card.
+Canceled issues aren't on the board.
 
-In the card view, **Close issue** closes it as completed and the card moves to Done. **Archive** hides the card. An open issue is closed as "not planned". A done issue stays closed as completed and gets the `kanban:archived` label. Reopen the issue, or remove the label, on GitHub to bring it back.
+Drag a card to another column to move it. On touch screens, long-press it first, and on a phone drop it on the column tabs. You can also use the buttons in the card view. Moving a card sets the issue's state to the team's first state for that column, and To do prefers **Todo** over **Backlog**. Moving to In review needs a review state in the team's workflow. You can manage the same board from Linear or an agent.
+
+In the card view, **Mark done** moves the issue to the team's completed state. **Archive** hides the card. An open issue moves to **Canceled**. A done issue is archived in Linear and stays completed. Reopen or unarchive it in Linear to bring it back.
 
 To clear out Done, use the archive button on a done card or **Clear** in the Done column's heading.
 
-**New card** creates an issue. The board refreshes every minute and when you press refresh.
+**New card** creates an issue in the project's team. The board refreshes every minute and when you press refresh.
 
-Choose **All projects** in the project picker to see every git project's issues on one board. Cards show GitHub's cross-repo reference, such as `api#12`. "New card" asks which project the issue belongs to. Projects that share a GitHub repo appear once. The combined board refreshes every 5 minutes instead of every minute.
+Choose **All projects** in the project picker to see every linked team's issues on one board. "New card" asks which project the issue belongs to. Projects linked to the same team appear once. The combined board refreshes every 5 minutes instead of every minute.
+
+To change a project's team or replace the API key, open the project picker.
 
 The toggle in the header switches between the board and a **list view**. The list shows every card on one page, grouped by column, with its labels, assignee and last update. Paseo remembers which view you chose.
 
@@ -47,17 +51,15 @@ Press the ▶ button on a card or list row, or open the card, choose an agent an
 2. Starts the agent there with the issue attached.
 3. Moves the card to **In progress**.
 
-By default the first message tells the agent to open a pull request that includes `Closes #N`. The card then moves on its own:
+By default the first message tells the agent to open a pull request that includes `Fixes ENG-12`. With Linear's [GitHub integration](https://linear.app/docs/github) turned on, the card then moves on its own:
 
-- When the pull request opens, the card moves to **In review**, because GitHub links the pull request to the issue.
-- When the pull request merges, GitHub closes the issue and the card moves to **Done**.
+- When the pull request opens, Linear moves the issue to **In Review**.
+- When the pull request merges, Linear moves it to **Done**.
 
 ## Limitations
 
-- The board shows up to 500 open issues and the 30 most recently closed ones.
-- Dragging moves a card between columns but not within one, because GitHub issues have no manual order.
-- Cards are sorted by last update.
-- While a card has an open pull request, it stays in **In review**. Dragging it to another column won't stick until the pull request is merged or closed.
+- The board shows up to 250 open issues and the 30 most recently completed ones per team.
+- Dragging moves a card between columns but not within one. Cards are sorted by last update.
 
 ## Development
 
@@ -65,7 +67,7 @@ By default the first message tells the agent to open a pull request that include
 npm install
 npm run typecheck
 npm test
-paseo plugin install "$PWD"      # then: paseo plugin reload paseo-github-kanban
+paseo plugin install "$PWD"      # then: paseo plugin reload paseo-linear-kanban
 ```
 
 ## License

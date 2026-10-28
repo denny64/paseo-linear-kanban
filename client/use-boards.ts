@@ -1,55 +1,53 @@
 import type { PaseoProject } from "./paseo-types";
 import { useRpc } from "@getpaseo/plugin/client";
 import { useMutation, useQueries, useQueryClient } from "@tanstack/react-query";
-import { archiveCardRpc, type Card, type ColumnId, loadBoardRpc, moveCardRpc, type Repo } from "../shared/board";
+import { archiveCardRpc, type Card, type ColumnId, loadBoardRpc, moveCardRpc, type Team } from "../shared/board";
 
-type Board = { repo: Repo; cards: Card[] };
+type Board = { team: Team; cards: Card[] };
 
-// A card plus where it lives, so one view can mix repos.
-export type BoardCard = Card & { key: string; repo: Repo; project: PaseoProject };
+// A project whose board is a Linear team's issues.
+export type LinkedProject = { project: PaseoProject; teamId: string };
 
-export function boardCard(card: Card, repo: Repo, project: PaseoProject): BoardCard {
-  return { ...card, key: `${repo.nameWithOwner}#${card.number}`, repo, project };
+// A card plus where it lives, so one view can mix teams.
+export type BoardCard = Card & { key: string; team: Team; project: PaseoProject };
+
+export function boardCard(card: Card, team: Team, project: PaseoProject): BoardCard {
+  return { ...card, key: card.id, team, project };
 }
 
-const boardKey = (project: PaseoProject) => ["board", project.projectRootPath];
+const boardKey = (teamId: string) => ["board", teamId];
 
-// GitHub's own cross-repo reference ("api#12") when repos are mixed.
-export function cardRef(card: BoardCard, showRepo: boolean): string {
-  return showRepo ? `${card.repo.nameWithOwner.split("/")[1]}#${card.number}` : `#${card.number}`;
-}
-
-// One query per project, shared with the single-project view's cache.
-export function useBoards(projects: readonly PaseoProject[], refetchInterval: number) {
+// One query per team, shared with the single-project view's cache.
+export function useBoards(linked: readonly LinkedProject[], refetchInterval: number) {
   const loadBoard = useRpc(loadBoardRpc);
   const queries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: boardKey(project),
-      queryFn: () => loadBoard({ cwd: project.projectRootPath }),
+    queries: linked.map(({ teamId }) => ({
+      queryKey: boardKey(teamId),
+      queryFn: () => loadBoard({ teamId }),
       refetchInterval,
       staleTime: 30_000,
     })),
   });
 
   const cards: BoardCard[] = [];
-  const repos: { project: PaseoProject; repo: Repo }[] = [];
+  const teams: { project: PaseoProject; team: Team }[] = [];
   const failed: { project: PaseoProject; error: unknown }[] = [];
   queries.forEach((query, index) => {
-    const project = projects[index];
+    const { project } = linked[index];
     if (query.error) failed.push({ project, error: query.error });
-    // Two checkouts of the same repo would show every card twice; keep the first.
-    if (!query.data || repos.some((r) => r.repo.nameWithOwner === query.data.repo.nameWithOwner)) return;
-    const { repo } = query.data;
-    repos.push({ project, repo });
-    for (const card of query.data.cards) cards.push(boardCard(card, repo, project));
+    // Two projects on the same team would show every card twice; keep the first.
+    if (!query.data || teams.some((t) => t.team.id === query.data.team.id)) return;
+    const { team } = query.data;
+    teams.push({ project, team });
+    for (const card of query.data.cards) cards.push(boardCard(card, team, project));
   });
   cards.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   return {
     cards,
-    repos,
+    teams,
     failed,
-    // Show whatever has arrived rather than waiting on the slowest repo.
+    // Show whatever has arrived rather than waiting on the slowest team.
     ready: queries.some((q) => q.data) || queries.every((q) => !q.isPending),
     fetching: queries.some((q) => q.isFetching),
     refetch: () => Promise.all(queries.map((q) => q.refetch())),
@@ -58,12 +56,12 @@ export function useBoards(projects: readonly PaseoProject[], refetchInterval: nu
 
 export function usePutCard() {
   const queryClient = useQueryClient();
-  return (project: PaseoProject, card: Card) =>
-    queryClient.setQueryData<Board>(boardKey(project), (board) =>
+  return (team: Team, card: Card) =>
+    queryClient.setQueryData<Board>(boardKey(team.id), (board) =>
       board && {
         ...board,
-        cards: board.cards.some((c) => c.number === card.number)
-          ? board.cards.map((c) => (c.number === card.number ? card : c))
+        cards: board.cards.some((c) => c.id === card.id)
+          ? board.cards.map((c) => (c.id === card.id ? card : c))
           : [card, ...board.cards],
       },
     );
@@ -74,20 +72,19 @@ export function useMoveCard(onError: (error: unknown) => void) {
   const moveCard = useRpc(moveCardRpc);
   const putCard = usePutCard();
   return useMutation({
-    mutationFn: ({ card, column }: { card: BoardCard; column: ColumnId }) =>
-      moveCard({ repo: card.repo.nameWithOwner, number: card.number, column }),
+    mutationFn: ({ card, column }: { card: BoardCard; column: ColumnId }) => moveCard({ id: card.id, column }),
     onMutate: async ({ card, column }) => {
-      const { key: _key, repo: _repo, project, ...data } = card;
-      await queryClient.cancelQueries({ queryKey: boardKey(project) });
-      const previous = queryClient.getQueryData<Board>(boardKey(project));
-      putCard(project, { ...data, column });
+      const { key: _key, team, project: _project, ...data } = card;
+      await queryClient.cancelQueries({ queryKey: boardKey(team.id) });
+      const previous = queryClient.getQueryData<Board>(boardKey(team.id));
+      putCard(team, { ...data, column });
       return { previous };
     },
     onError: (error, { card }, context) => {
-      queryClient.setQueryData(boardKey(card.project), context?.previous);
+      queryClient.setQueryData(boardKey(card.team.id), context?.previous);
       onError(error);
     },
-    onSuccess: (updated, { card }) => putCard(card.project, updated),
+    onSuccess: (updated, { card }) => putCard(card.team, updated),
   });
 }
 
@@ -95,18 +92,18 @@ export function useArchiveCard(onError: (error: unknown) => void) {
   const queryClient = useQueryClient();
   const archiveCard = useRpc(archiveCardRpc);
   return useMutation({
-    mutationFn: (card: BoardCard) => archiveCard({ repo: card.repo.nameWithOwner, number: card.number }),
+    mutationFn: (card: BoardCard) => archiveCard({ id: card.id }),
     onMutate: async (card) => {
-      const key = boardKey(card.project);
+      const key = boardKey(card.team.id);
       await queryClient.cancelQueries({ queryKey: key });
       const previous = queryClient.getQueryData<Board>(key);
       queryClient.setQueryData<Board>(key, (board) =>
-        board && { ...board, cards: board.cards.filter((c) => c.number !== card.number) },
+        board && { ...board, cards: board.cards.filter((c) => c.id !== card.id) },
       );
       return { previous };
     },
     onError: (error, card, context) => {
-      queryClient.setQueryData(boardKey(card.project), context?.previous);
+      queryClient.setQueryData(boardKey(card.team.id), context?.previous);
       onError(error);
     },
   });

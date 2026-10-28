@@ -1,15 +1,15 @@
 {
-  "name": "paseo-github-kanban",
-  "version": "0.3.0",
-  "description": "Kanban board for Paseo backed by GitHub issues, with one-click agents per card.",
+  "name": "paseo-linear-kanban",
+  "version": "0.1.0",
+  "description": "Kanban board for Paseo backed by Linear issues, with one-click agents per card.",
   "keywords": [
     "paseo",
     "paseo-plugin",
     "kanban",
-    "github-issues"
+    "linear"
   ],
   "license": "MIT",
-  "repository": "github:denny64/paseo-github-kanban",
+  "repository": "github:denny64/paseo-linear-kanban",
   "files": [
     "paseo-plugin.json",
     "index.client.tsx",

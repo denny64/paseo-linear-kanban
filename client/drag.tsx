@@ -34,7 +34,7 @@ const inside = (p: Point, r: Rect) => p.x >= r.x && p.x <= r.x + r.width && p.y 
 export type CardDrag = ReturnType<typeof useCardDrag>;
 
 // Drag a card onto another column (or column tab). There is no reordering:
-// GitHub issues have no manual order, so a drop target is a column, not a slot.
+// Cards are sorted by last update, so a drop target is a column, not a slot.
 export function useCardDrag(onDrop: (card: BoardCard, column: ColumnId) => void) {
   const rootRef = useRef<View>(null);
   const targets = useRef(new Map<ColumnId, View>()).current;

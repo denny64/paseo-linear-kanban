@@ -1,9 +1,11 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { archiveCard, createCard, loadBoard, moveCard } from "./server/board";
-import { archiveCardRpc, boardSettings, createCardRpc, loadBoardRpc, moveCardRpc } from "./shared/board";
+import { archiveCard, createCard, listTeams, loadBoard, moveCard } from "./server/board";
+import { connectSettings } from "./server/linear";
+import { archiveCardRpc, boardSettings, createCardRpc, listTeamsRpc, loadBoardRpc, moveCardRpc } from "./shared/board";
 
 export default function contribute(server: PluginServerContext) {
-  server.registerSettings(boardSettings);
+  connectSettings(server.registerSettings(boardSettings));
+  server.handle(listTeamsRpc, listTeams);
   server.handle(loadBoardRpc, loadBoard);
   server.handle(createCardRpc, createCard);
   server.handle(moveCardRpc, moveCard);

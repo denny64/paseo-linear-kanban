@@ -3,13 +3,12 @@ import { Pressable, Text, View } from "react-native";
 import { COLUMNS, type ColumnId } from "../shared/board";
 import { timeAgo } from "../shared/time";
 import { ColumnHeading, IconButton, LabelPill, TextAction, type Theme } from "./controls";
-import { type BoardCard, cardRef } from "./use-boards";
+import type { BoardCard } from "./use-boards";
 
 // Every card on one scrolling page, grouped by column in board order.
 export function ListView({
   theme,
   compact,
-  showRepo,
   byColumn,
   onOpen,
   onStartAgent,
@@ -18,7 +17,6 @@ export function ListView({
 }: {
   theme: Theme;
   compact: boolean;
-  showRepo: boolean;
   byColumn: Map<ColumnId, BoardCard[]>;
   onOpen(key: string): void;
   onStartAgent(key: string): void;
@@ -63,7 +61,6 @@ export function ListView({
                     theme={theme}
                     card={card}
                     compact={compact}
-                    showRepo={showRepo}
                     first={index === 0}
                     onPress={() => onOpen(card.key)}
                     onStartAgent={() => onStartAgent(card.key)}
@@ -83,7 +80,6 @@ function ListRow({
   theme,
   card,
   compact,
-  showRepo,
   first,
   onPress,
   onStartAgent,
@@ -92,7 +88,6 @@ function ListRow({
   theme: Theme;
   card: BoardCard;
   compact: boolean;
-  showRepo: boolean;
   first: boolean;
   onPress(): void;
   onStartAgent(): void;
@@ -100,7 +95,7 @@ function ListRow({
 }) {
   const muted = { color: theme.colors.foregroundMuted, fontSize: 12 };
   const age = timeAgo(card.updatedAt);
-  const ref = cardRef(card, showRepo);
+  const ref = card.identifier;
   return (
     <Pressable
       accessibilityRole="button"
@@ -117,11 +112,7 @@ function ListRow({
         backgroundColor: pressed ? theme.colors.surface2 : "transparent",
       })}
     >
-      {/* Mixed repos get a fixed-width reference column so titles still line up. */}
-      <Text
-        style={[muted, showRepo && !compact ? { width: 170 } : { minWidth: 40 }, { fontVariant: ["tabular-nums"] }]}
-        numberOfLines={1}
-      >
+      <Text style={[muted, { minWidth: 64, fontVariant: ["tabular-nums"] }]} numberOfLines={1}>
         {ref}
       </Text>
       <Text

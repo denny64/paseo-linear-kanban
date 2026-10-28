@@ -10,8 +10,9 @@ import { CardModal, StartAgentModal } from "./card-modal";
 import { Button, ColumnHeading, columnColor, errorMessage, IconButton, LabelPill, TextAction, type Theme } from "./controls";
 import { type CardDrag, DragOverlay, Draggable, useCardDrag } from "./drag";
 import { ListView } from "./list-view";
+import { ApiKeyForm, TeamSelect } from "./linear-settings";
 import { NewCardModal } from "./new-card-modal";
-import { type BoardCard, cardRef, useArchiveCard, useBoards, useMoveCard, usePutCard } from "./use-boards";
+import { type BoardCard, type LinkedProject, useArchiveCard, useBoards, useMoveCard, usePutCard } from "./use-boards";
 
 type ViewMode = "board" | "list";
 
@@ -37,10 +38,14 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
     settings.status === "loading"
       ? undefined
       : (projects.data?.find((p) => p.projectId === values?.projectId) ?? projects.data?.[0]);
-  const scope = settings.status === "loading" ? [] : showAll ? (projects.data ?? []) : project ? [project] : [];
+  const linked = (p: PaseoProject): LinkedProject[] => {
+    const teamId = values?.teams[p.projectId];
+    return teamId ? [{ project: p, teamId }] : [];
+  };
+  const scope = !values?.apiKey ? [] : showAll ? (projects.data ?? []).flatMap(linked) : project ? linked(project) : [];
 
-  // ponytail: one gh round trip per repo per refresh, so the all-projects view
-  // polls every 5 min instead of every minute; move to a single GraphQL query if that bites.
+  // ponytail: one Linear request per team per refresh, so the all-projects view
+  // polls every 5 min instead of every minute; batch into one GraphQL query if that bites.
   const boards = useBoards(scope, showAll ? 300_000 : 60_000);
   const putCard = usePutCard();
   const move = useMoveCard((error) => toast.error(`Couldn't move the card: ${errorMessage(error)}`));
@@ -117,8 +122,22 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
   if (projects.isError) {
     body = <Message styles={styles} text={errorMessage(projects.error)} />;
   } else if (projects.data && projects.data.length === 0) {
-    body = <Message styles={styles} text="Add a git project in Paseo to get a board for its GitHub issues." />;
-  } else if (boards.repos.length === 0 && boards.failed.length > 0 && !boards.fetching) {
+    body = <Message styles={styles} text="Add a git project in Paseo to get a board for its Linear issues." />;
+  } else if (values && !values.apiKey) {
+    body = (
+      <View style={styles.message}>
+        <ApiKeyForm theme={theme} intro="Connect Linear to see your issues. The key stays on this Paseo host." />
+      </View>
+    );
+  } else if (values && !showAll && project && scope.length === 0) {
+    body = (
+      <Message styles={styles} text={`Choose the Linear team whose issues belong to ${project.projectDisplayName}.`}>
+        <TeamSelect theme={theme} projectId={project.projectId} />
+      </Message>
+    );
+  } else if (values && showAll && projects.data && scope.length === 0) {
+    body = <Message styles={styles} text="No project has a Linear team yet. Pick a project to choose its team." />;
+  } else if (boards.teams.length === 0 && boards.failed.length > 0 && !boards.fetching) {
     body = (
       <Message styles={styles} text={errorMessage(boards.failed[0].error)}>
         <Button theme={theme} label="Try again" icon="RotateCw" onPress={() => boards.refetch()} />
@@ -131,7 +150,6 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
       <ListView
         theme={theme}
         compact={layout.compact}
-        showRepo={showAll}
         byColumn={byColumn}
         onOpen={setOpenCard}
         onStartAgent={setStartFor}
@@ -160,7 +178,6 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
         <Column
           theme={theme}
           cards={byColumn.get(compactColumn)!}
-          showRepo={showAll}
           drag={drag}
           onOpen={setOpenCard}
           onStartAgent={setStartFor}
@@ -179,7 +196,6 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
             column={column.id}
             title={column.title}
             cards={byColumn.get(column.id)!}
-            showRepo={showAll}
             drag={drag}
             onOpen={setOpenCard}
             onStartAgent={setStartFor}
@@ -199,8 +215,8 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
     move.mutate({ card: started, column: "in-progress" });
     navigation?.openAgent({ agentId });
   };
-  // Some repos loaded and some didn't: say which, without hiding the rest.
-  const skipped = showAll && boards.repos.length > 0 ? boards.failed.map((f) => f.project.projectDisplayName) : [];
+  // Some teams loaded and some didn't: say which, without hiding the rest.
+  const skipped = showAll && boards.teams.length > 0 ? boards.failed.map((f) => f.project.projectDisplayName) : [];
 
   return (
     <View ref={drag.rootRef} style={styles.screen}>
@@ -217,11 +233,11 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
             </Text>
             <Icon name="ChevronDown" size={16} color={theme.colors.foregroundMuted} />
           </View>
-          {boards.repos.length > 0 ? (
+          {boards.teams.length > 0 ? (
             <Text style={styles.muted}>
               {showAll
-                ? `${boards.repos.length} ${boards.repos.length === 1 ? "repo" : "repos"} · GitHub issues`
-                : `${boards.repos[0].repo.nameWithOwner} · GitHub issues`}
+                ? `${boards.teams.length} ${boards.teams.length === 1 ? "team" : "teams"} · Linear`
+                : `${boards.teams[0].team.name} · Linear`}
             </Text>
           ) : null}
         </Pressable>
@@ -239,7 +255,7 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
           label="New card"
           icon="Plus"
           primary
-          disabled={boards.repos.length === 0}
+          disabled={boards.teams.length === 0}
           onPress={() => setCreating(true)}
         />
       </View>
@@ -271,14 +287,16 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
               onPress={() => selectProject(p)}
             />
           ))}
+          {values?.apiKey && !showAll && project ? <TeamSelect theme={theme} projectId={project.projectId} /> : null}
+          {values?.apiKey ? <ApiKeyForm theme={theme} /> : null}
         </Modal.Content>
       </Modal>
 
-      {boards.repos.length > 0 ? (
+      {boards.teams.length > 0 ? (
         <NewCardModal
           theme={theme}
           open={creating}
-          targets={boards.repos}
+          targets={boards.teams}
           defaultProjectId={project?.projectId}
           onOpenChange={setCreating}
           onCreated={putCard}
@@ -290,13 +308,15 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
         <CardModal
           theme={theme}
           card={card}
-          reference={cardRef(card, showAll)}
+          reference={card.identifier}
           onClose={() => setOpenCard(null)}
           onMove={(column) => move.mutate({ card, column })}
           onArchive={() => {
             setOpenCard(null);
             archive.mutate(card);
-            toast.show(`Archived ${cardRef(card, showAll)}. Reopen it on GitHub to bring it back.`);
+            toast.show(
+              `Archived ${card.identifier}. ${card.column === "done" ? "Unarchive" : "Reopen"} it in Linear to bring it back.`,
+            );
           }}
           onAgentStarted={(agentId) => agentStarted(card, agentId)}
         />
@@ -305,8 +325,8 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
       <Modal title="Clear done cards" open={clearingDone} onOpenChange={setClearingDone}>
         <Modal.Content>
           <Text style={{ color: theme.colors.foreground, fontSize: 14, lineHeight: 20 }}>
-            Hide all {byColumn.get("done")!.length} cards in Done? Each issue gets the kanban:archived label and stays closed as
-            completed. Remove the label on GitHub to bring a card back.
+            Hide all {byColumn.get("done")!.length} cards in Done? Each issue is archived in Linear and stays completed.
+            Unarchive it in Linear to bring a card back.
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
             <Button theme={theme} label="Clear done" icon="Archive" primary onPress={clearDone} />
@@ -319,13 +339,13 @@ export function BoardSurface({ theme, layout, navigation }: PluginSurfaceProps) 
         <StartAgentModal
           theme={theme}
           card={startCard}
-          reference={cardRef(startCard, showAll)}
+          reference={startCard.identifier}
           onClose={() => setStartFor(null)}
           onStarted={(agentId) => agentStarted(startCard, agentId)}
         />
       ) : null}
 
-      <DragOverlay drag={drag}>{(dragged) => <CardTile theme={theme} card={dragged} showRepo={showAll} lifted />}</DragOverlay>
+      <DragOverlay drag={drag}>{(dragged) => <CardTile theme={theme} card={dragged} lifted />}</DragOverlay>
     </View>
   );
 }
@@ -393,7 +413,6 @@ function Column({
   column,
   title,
   cards,
-  showRepo,
   drag,
   compact,
   onOpen,
@@ -405,7 +424,6 @@ function Column({
   column?: ColumnId;
   title?: string;
   cards: BoardCard[];
-  showRepo: boolean;
   drag: CardDrag;
   compact?: boolean;
   onOpen(key: string): void;
@@ -455,7 +473,6 @@ function Column({
               <CardTile
                 theme={theme}
                 card={card}
-                showRepo={showRepo}
                 onPress={() => !drag.justDropped() && onOpen(card.key)}
                 onStartAgent={() => onStartAgent(card.key)}
                 onArchive={() => onArchive(card.key)}
@@ -473,7 +490,6 @@ function Column({
 function CardTile({
   theme,
   card,
-  showRepo,
   lifted,
   onPress,
   onLongPress,
@@ -483,7 +499,6 @@ function CardTile({
 }: {
   theme: Theme;
   card: BoardCard;
-  showRepo: boolean;
   // The copy that follows the pointer while dragging.
   lifted?: boolean;
   onPress?(): void;
@@ -492,7 +507,7 @@ function CardTile({
   onStartAgent?(): void;
   onArchive?(): void;
 }) {
-  const ref = cardRef(card, showRepo);
+  const ref = card.identifier;
   return (
     <Pressable
       accessibilityRole="button"

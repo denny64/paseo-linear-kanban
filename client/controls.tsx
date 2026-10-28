@@ -86,7 +86,7 @@ export function LabelPill({ theme, name, color }: { theme: Theme; name: string; 
         backgroundColor: theme.colors.surface2,
       }}
     >
-      {/* The dot is GitHub's label colour; the text stays on theme colours. */}
+      {/* The dot is Linear's label colour; the text stays on theme colours. */}
       <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: `#${color}` }} />
       <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11 }}>{name}</Text>
     </View>

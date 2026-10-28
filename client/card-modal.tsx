@@ -10,13 +10,15 @@ import { Button, errorMessage, inputStyle, LabelPill, type Theme } from "./contr
 import { type AgentImage, ImageAttachments, useImages } from "./images";
 import type { BoardCard } from "./use-boards";
 
-export function agentPrompt(card: Card, repo: string): string {
+// "Fixes ENG-12" links the pull request in Linear, which moves the issue to
+// In Review when it opens and Done when it merges (with the GitHub integration on).
+export function agentPrompt(card: Card): string {
   return [
-    `Work on GitHub issue #${card.number} in ${repo}: ${card.title}`,
+    `Work on Linear issue ${card.identifier}: ${card.title}`,
     "The issue is attached.",
     "",
     "When you're done:",
-    `Commit your work and open a pull request whose description includes "Closes #${card.number}".`,
+    `Commit your work and open a pull request whose description includes "Fixes ${card.identifier}".`,
   ].join("\n");
 }
 
@@ -145,7 +147,7 @@ export async function startAgentOn(
 ) {
   const { project } = card;
   const workspace = await paseo.workspaces.create({
-    title: `#${card.number} ${card.title}`,
+    title: `${card.identifier} ${card.title}`,
     source: { kind: "worktree", cwd: project.projectRootPath, projectId: project.projectId, action: "branch-off" },
     firstAgentContext: { prompt },
   });
@@ -155,12 +157,19 @@ export async function startAgentOn(
     images,
     attachments: [
       {
-        type: "github_issue",
-        mimeType: "application/github-issue",
-        number: card.number,
-        title: card.title,
-        url: card.url,
-        body: card.body,
+        type: "text",
+        mimeType: "text/plain",
+        title: `${card.identifier}: ${card.title}`,
+        text: [`# ${card.identifier}: ${card.title}`, card.url, "", card.body.trim()].join("\n"),
+        externalResource: {
+          provider: "linear",
+          providerLabel: "Linear",
+          resourceType: "issue",
+          id: card.id,
+          identifier: card.identifier,
+          title: card.title,
+          url: card.url,
+        },
       },
     ],
   });
@@ -201,7 +210,7 @@ export function CardModal({
         <Text style={{ color: theme.colors.foregroundMuted, fontSize: 14, lineHeight: 20 }} selectable>
           {card.body.trim() || "No description."}
         </Text>
-        <ExternalLink href={card.url}>Open on GitHub</ExternalLink>
+        <ExternalLink href={card.url}>Open in Linear</ExternalLink>
 
         <View style={{ gap: 8 }}>
           <Text style={heading}>COLUMN</Text>
@@ -227,14 +236,14 @@ export function CardModal({
           <Text style={heading}>ISSUE</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {card.column !== "done" ? (
-              <Button theme={theme} label="Close issue" icon="CircleCheck" onPress={() => onMove("done")} />
+              <Button theme={theme} label="Mark done" icon="CircleCheck" onPress={() => onMove("done")} />
             ) : null}
             <Button theme={theme} label="Archive" icon="Archive" onPress={onArchive} />
           </View>
           <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
             {card.column === "done"
-              ? "Archive hides this card with the kanban:archived label; the issue stays closed as completed."
-              : "Archive closes the issue as not planned and hides it. Reopen it on GitHub to bring it back."}
+              ? "Archive archives the issue in Linear; it stays completed. Unarchive it in Linear to bring it back."
+              : "Archive moves the issue to Canceled and hides it. Reopen it in Linear to bring it back."}
           </Text>
         </View>
       </Modal.Content>
@@ -280,7 +289,7 @@ function StartAgent({
   const paseo = usePaseo();
   const toast = useToast();
   const picker = useAgentPicker(card.project.projectRootPath);
-  const [prompt, setPrompt] = useState(() => agentPrompt(card, card.repo.nameWithOwner));
+  const [prompt, setPrompt] = useState(() => agentPrompt(card));
   const images = useImages(true, toast.error);
 
   const start = useMutation({

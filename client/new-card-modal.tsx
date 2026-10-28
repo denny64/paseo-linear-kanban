@@ -5,7 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { Text, View } from "react-native";
 import { SettingsCard, SettingsSelect } from "@getpaseo/plugin/client/ui";
-import { type Card, createCardRpc, type Repo } from "../shared/board";
+import { type Card, createCardRpc, type Team } from "../shared/board";
 import { AgentPicker, agentPrompt, startAgentOn, useAgentPicker } from "./card-modal";
 import { Button, errorMessage, inputStyle, type Theme } from "./controls";
 import { ImageAttachments, useImages } from "./images";
@@ -22,11 +22,11 @@ export function NewCardModal({
 }: {
   theme: Theme;
   open: boolean;
-  // Repos the new issue can go to: one on a project board, all of them on "All projects".
-  targets: { project: PaseoProject; repo: Repo }[];
+  // Teams the new issue can go to: one on a project board, all of them on "All projects".
+  targets: { project: PaseoProject; team: Team }[];
   defaultProjectId?: string;
   onOpenChange(open: boolean): void;
-  onCreated(project: PaseoProject, card: Card): void;
+  onCreated(team: Team, card: Card): void;
   onAgentStarted(card: BoardCard, agentId: string): void;
 }) {
   const paseo = usePaseo();
@@ -37,23 +37,22 @@ export function NewCardModal({
   const [picked, setPicked] = useState<string | null>(null);
   const target =
     targets.find((t) => t.project.projectId === (picked ?? defaultProjectId)) ?? targets[0];
-  const repo = target.repo.nameWithOwner;
   const picker = useAgentPicker(target.project.projectRootPath);
   const images = useImages(open, toast.error);
   const create = useMutation({
     mutationFn: async (withAgent: boolean) => {
-      const card = boardCard(await createCard({ repo, title, body }), target.repo, target.project);
-      onCreated(target.project, card);
+      const card = boardCard(await createCard({ teamId: target.team.id, title, body }), target.team, target.project);
+      onCreated(target.team, card);
       setTitle("");
       setBody("");
       if (withAgent && picker.config) {
         // The issue exists either way, so a failed start only costs the agent.
         try {
-          const agentId = await startAgentOn(paseo, card, picker.config, agentPrompt(card, repo), images.images);
+          const agentId = await startAgentOn(paseo, card, picker.config, agentPrompt(card), images.images);
           picker.remember();
           onAgentStarted(card, agentId);
         } catch (error) {
-          toast.error(`Created #${card.number}, but couldn't start the agent: ${errorMessage(error)}`);
+          toast.error(`Created ${card.identifier}, but couldn't start the agent: ${errorMessage(error)}`);
         }
       }
       images.clear();
@@ -76,7 +75,9 @@ export function NewCardModal({
             />
           </SettingsCard>
         ) : null}
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>Creates an issue in {repo}.</Text>
+        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>
+          Creates an issue in {target.team.name} ({target.team.key}).
+        </Text>
         <TextInput
           accessibilityLabel="Title"
           value={title}
